@@ -1,0 +1,25 @@
+@font-face {
+    font-family: "Linux Biolinum";
+    src: url("/static/fonts/linux_biolinum/LinBiolinum_R.ttf") format("truetype");
+    font-weight: normal;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Linux Biolinum";
+    src: url("/static/fonts/linux_biolinum/LinBiolinum_RB.ttf") format("truetype");
+    font-weight: bold;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Linux Biolinum";
+    src: url("/static/fonts/linux_biolinum/LinBiolinum_RI.ttf") format("truetype");
+    font-weight: normal;
+    font-style: italic;
+}
+
+html {
+    font-family: "Linux Biolinum";
+}
+
