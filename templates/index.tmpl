@@ -1,0 +1,49 @@
+<!doctype html>
+
+<html>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width" />
+        <title>MiniWiki</title>
+        <link href="/static/style.css" rel="stylesheet" />
+        <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    </head>
+    <body>
+        <h1>
+            <center>Welcome to MiniWiki!</center>
+        </h1>
+        <div class="card">
+            This is a small, markdown-based Wiki.
+            The web view can be used to read and explore the wiki, while edits 
+            are made directly to the markdown files in the "wiki" directory.
+            Using those, the web view is generated on the fly.
+            If you're new here, please check out the 
+            <a class="" href="/wiki/meta/wiki">documentation</a>.
+            If you want new features, find bugs, or are interested in the code, please check out the 
+            <a class="" href="https://github.com/nataliecarl/miniwiki">repository</a>.
+        </div>
+        <div class="">
+        {{ template "content" . }}
+        </div>
+    </body>
+</html>
+
+{{ define "content" }}
+    {{ if .Subdirectories }}
+    <h4>Categories</h4>
+    <ul class="">
+        {{ range .Subdirectories }}
+        <li><a href="{{ .Link }}">{{ .Title }}</a></li>
+        {{ end }}
+    </ul>
+    {{ end }}
+
+    {{ if .Files }}
+    <h4>Articles</h4>
+    <ul class="">
+        {{ range .Files }}
+        <li><a href="{{ .Link }}">{{ .Title }}</a></li>
+        {{ end }}
+    </ul>
+    {{ end }}
+{{ end }}

@@ -1,0 +1,9 @@
+{{ define "navigation" }} 
+    <nav>
+            <a href="/wiki">wiki</a>
+            {{ range . -}} 
+            &gt;&gt; <a href="{{ .Link }}">{{ .Title }}</a>
+            {{ end }}
+        <hr/>
+    </nav>
+{{ end }}

@@ -1,0 +1,17 @@
+<!doctype html>
+
+<html>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width" />
+        <title>MiniWiki</title>
+        <link href="/static/style.css" rel="stylesheet" />
+        <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    </head>
+    <body>
+        {{ if .Navigation }}{{ template "navigation" .Navigation }}{{ end }}
+        {{ if .Article}}{{ template "article" .Article }}{{ end }}
+        {{ if .Directory}}{{ template "directory" .Directory }}{{ end }}
+    </body>
+</html>
+

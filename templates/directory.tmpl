@@ -1,0 +1,18 @@
+{{ define "directory" }}
+    {{ if .Subdirectories }}
+    <h4>Categories</h4>
+    <ul>
+        {{ range .Subdirectories }}
+        <li><a href="{{ .Link }}">{{ .Title }}</a></li>
+        {{ end }}
+    </ul>
+    {{ end }}
+    {{ if .Files }}
+    <h4>Articles</h4>
+    <ul>
+        {{ range .Files }}
+        <li><a href="{{ .Link }}">{{ .Title }}</a></li>
+        {{ end }}
+    </ul>
+    {{ end }}
+{{ end }}
