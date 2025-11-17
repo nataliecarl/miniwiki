@@ -1,0 +1,8 @@
+version: "3.9"
+services:
+  miniwiki:
+    build: .
+    container_name: miniwiki
+    ports:
+      - "80:8080"
+      - "443:8080"
