@@ -1,7 +1,18 @@
-version: "3.9"
 services:
+  update-submodules:
+    image: alpine/git
+    volumes:
+      - .:/repo
+      - ./miniwiki:/.ssh/miniwiki
+    working_dir: /repo
+    environment:
+      - GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=no
+    entrypoint: >
+      sh -c "git config --global --add safe.directory /repo && GIT_SSH_COMMAND='ssh -i /.ssh/miniwiki -o IdentitiesOnly=yes -o StrictHostKeyChecking=no' git submodule update --init --recursive --remote"
   miniwiki:
     build: .
+    volumes:
+      - ./wiki:/app/wiki
     container_name: miniwiki
     ports:
       - "80:8080"

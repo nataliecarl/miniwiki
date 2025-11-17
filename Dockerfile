@@ -17,7 +17,6 @@ COPY --from=builder /app/bin /app/bin
 
 COPY static ./static
 COPY templates ./templates
-COPY wiki ./wiki
 
 EXPOSE 8080
 
