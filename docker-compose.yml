@@ -1,14 +1,13 @@
 services:
-  update-submodules:
-    image: alpine/git
+  webhook:
+    build: ./webhook/
     volumes:
-      - .:/repo
-      - ./miniwiki:/.ssh/miniwiki
-    working_dir: /repo
-    environment:
-      - GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=no
-    entrypoint: >
-      sh -c "git config --global --add safe.directory /repo && GIT_SSH_COMMAND='ssh -i /.ssh/miniwiki -o IdentitiesOnly=yes -o StrictHostKeyChecking=no' git submodule update --init --recursive --remote"
+      - .:/app/wiki
+    container_name: miniwiki-webhook
+    ports:
+      - "9000:9000"
+    env_file:
+      - ./webhook/.env
   miniwiki:
     build: .
     volumes:
@@ -16,4 +15,4 @@ services:
     container_name: miniwiki
     ports:
       - "80:8080"
-      - "443:8080"
+      - "443:8080" 
