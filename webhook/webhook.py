@@ -3,6 +3,7 @@ import os
 from fastapi import FastAPI, Request, HTTPException
 import hashlib, hmac
 import uvicorn
+import sys
 
 WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET')
 if not WEBHOOK_SECRET:
@@ -20,9 +21,9 @@ app = FastAPI()
 
 def pull_repo():
     env = os.environ.copy()
-    env['GIT_SSH_COMMAND'] = 'ssh -i ./keys/miniwiki -o IdentitiesOnly=yes -o StrictHostKeyChecking=no'
+    env['GIT_SSH_COMMAND'] = 'ssh -i /app/keys/miniwiki -o IdentitiesOnly=yes -o StrictHostKeyChecking=no'
     cmd = ['git', 'submodule', 'update', '--init', '--recursive', '--remote']
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd='/app/wiki')
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd='/app/wiki', check=True)
     if result.returncode != 0:
         raise RuntimeError(f"Command {' '.join(cmd)} failed: {result.stderr}")
 
@@ -41,5 +42,11 @@ async def github_webhook(request: Request):
 
 if __name__ == "__main__":
     result = subprocess.run(['git', 'config', '--global', '--add', 'safe.directory', '/app/wiki'], check=True)
-    pull_repo()
+    if result.returncode != 0:
+        raise RuntimeError("Adding /app/wiki as a safe directory failed with '{result.stderr}'.")
+    try:
+        pull_repo()
+    except subprocess.CalledProcessError as e:
+        print(e)
+        raise RuntimeError(f"Unable to update repository. Make sure your key is authenticated! returncode: {e.returncode} stderr: '{e.stderr}' stdout: '{e.stdout}'")
     uvicorn.run(app, host='0.0.0.0', port=9000)
