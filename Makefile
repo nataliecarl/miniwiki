@@ -1,15 +1,23 @@
-PROJECT_NAME := "miniwiki"
+PROJECT_NAME := miniwiki
 GO := go
+SSH_KEY_PATH = ./miniwiki
+BIN_DIR = bin
 
-.PHONY: all build run clean
+.PHONY: all create_ssh_key build run clean
 
-all: build
+all: clean build create_ssh_key run
+
+create_ssh_key:
+	@if [ ! -f $(SSH_KEY_PATH) ]; then \
+		ssh-keygen -N "" -f $(SSH_KEY_PATH); \
+	fi
 
 build:
-	$(GO) build -o bin/$(PROJECT_NAME) ./...
+	mkdir -p $(BIN_DIR)
+	$(GO) build -o $(BIN_DIR)/$(PROJECT_NAME) ./...
 
 run:
-	./bin/$(PROJECT_NAME)
+	./$(BIN_DIR)/$(PROJECT_NAME)
 
 clean:
-	rm -rf bin
+	rm -rf $(BIN_DIR)

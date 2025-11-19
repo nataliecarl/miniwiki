@@ -3,6 +3,7 @@ services:
     build: ./webhook/
     volumes:
       - .:/app/wiki
+      - ./keys:/app/keys:ro
     container_name: miniwiki-webhook
     ports:
       - "9000:9000"
@@ -12,6 +13,7 @@ services:
     build: .
     volumes:
       - ./wiki:/app/wiki
+      - ./keys:/app/keys:ro
     container_name: miniwiki
     ports:
       - "80:8080"

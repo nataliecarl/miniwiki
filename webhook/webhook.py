@@ -20,7 +20,7 @@ app = FastAPI()
 
 def pull_repo():
     env = os.environ.copy()
-    env['GIT_SSH_COMMAND'] = 'ssh -i ./miniwiki -o IdentitiesOnly=yes -o StrictHostKeyChecking=no'
+    env['GIT_SSH_COMMAND'] = 'ssh -i ./keys/miniwiki -o IdentitiesOnly=yes -o StrictHostKeyChecking=no'
     cmd = ['git', 'submodule', 'update', '--init', '--recursive', '--remote']
     result = subprocess.run(cmd, capture_output=True, text=True, cwd='/app/wiki')
     if result.returncode != 0:
