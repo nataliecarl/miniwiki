@@ -5,13 +5,73 @@
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width" />
         <title>MiniWiki</title>
-        <link href="/static/style.css" rel="stylesheet" />
+        <link href="/static/article.css" rel="stylesheet" />
         <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     </head>
     <body>
-        {{ if .Navigation }}{{ template "navigation" .Navigation }}{{ end }}
-        {{ if .Article}}{{ template "article" .Article }}{{ end }}
-        {{ if .Directory}}{{ template "directory" .Directory }}{{ end }}
+        <div class="container">
+            <div class="container-header">
+                <div class="header card">
+                    <div class="header-navigation">
+                        {{ .Title }}
+                    </div>
+                    <div class="header-option">
+                        Placeholder
+                    </div>
+                </div>
+            </div>
+            <div class="container-body">
+                <div class="container-sidebar">
+                    <div class="sidebar">
+                        <i>Navigation</i>
+                        <br/><br/>
+                        {{ range $key, $value := .Navigation }}
+                            {{ if $value }}
+                                <a href="{{ $key.Link }}">{{ $key.Title }}</a>
+                                <ul>
+                                {{ range $value }}
+                                    <li><a href="{{ .Link }}">{{ .Title }}</a></li> 
+                                {{ end }}
+                                </ul><br/>
+                            {{ end }}
+                        {{ end }}
+                    </div>
+                </div>
+                <div class="container-content">
+                    <div class="content">
+                        {{ if .Content }}
+                            {{ template "article" . }}
+                        {{ else }}
+                            {{ template "directory" . }}
+                        {{ end }}
+                    </div>
+                </div>
+            </div>
+        </div>
     </body>
 </html>
+
+{{ define "article" }}
+    {{ .Content }}
+{{ end }}
+
+{{ define "directory" }}
+    <h1>{{ .Title }}</h1>
+    {{ if .Directory.Articles }}
+        <h2>Articles</h2>
+        <ul>
+            {{ range .Directory.Articles }}
+                <li><a href="{{ .Link }}">{{ .Title }}</a>
+            {{ end }}
+        </ul>
+    {{ end }}
+    {{ if .Directory.Topics }}
+        <h2>Topics</h2>
+        <ul>
+            {{ range .Directory.Topics }}
+                <li><a href="{{ .Link }}">{{ .Title }}</a>
+            {{ end }}
+        </ul>
+    {{ end }}
+{{ end }}
 
