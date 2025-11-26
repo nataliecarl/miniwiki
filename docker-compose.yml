@@ -1,0 +1,20 @@
+services:
+  webhook:
+    build: ./webhook/
+    volumes:
+      - .:/app/wiki
+      - ./keys:/app/keys:ro
+    container_name: miniwiki-webhook
+    ports:
+      - "9000:9000"
+    env_file:
+      - ./webhook/.env
+  miniwiki:
+    build: .
+    volumes:
+      - ./wiki:/app/wiki
+      - ./keys:/app/keys:ro
+    container_name: miniwiki
+    ports:
+      - "80:8080"
+      - "443:8080" 

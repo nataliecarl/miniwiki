@@ -1,3 +1,14 @@
+# Miniwiki
 Hi, this program generates a small wiki based on a collection on markdown files.
 
-More documentation coming to a repo near you soon! 
+## Deployment
+Setting up Miniwiki can be done with bare-metal services or using our provided `docker-compose.yml`.
+When using docker to deploy Miniwiki, some steps are required for the repo to work as intended.
+1. Create a ssh key-pair by running `ssh-keygen`
+2. Copy those keys into the folder `./keys/`, create it, if it does not exist yet
+3. Register the public key in `./keys/` as a deploykey in your favorite repository, which you want to use a a knowledge base for this wiki
+4. Put a `SECRET` in `./webhook/.env` so that the environment variable `WEBHOOK_SECRET` is set - please don't use our preset value
+5. The `SECRET` you put in your `.env` file can now be used to configure a webhook from you repository (e.g. github.com). The webhook service listens on port 9000 and expects webhook requests to target the `/github` endpoint. As Content-Type please select `application/json` and keep SSL verification disabled as long as you do not have SSL configured.
+
+# More Moar Mooaaaaaaaaaaaaarrr
+Moar documentation coming to a repo near you soon! 

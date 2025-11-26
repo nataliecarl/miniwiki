@@ -3,3 +3,5 @@
 .idea
 .todo
 .old
+bin
+keys/*
