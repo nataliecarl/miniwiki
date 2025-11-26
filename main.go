@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -27,7 +28,7 @@ const (
 		parser.OrderedListStart |
 		parser.SuperSubscript |
 		parser.EmptyLinesBreakList
-	RendererFlags = html.CommonFlags // https://pkg.go.dev/github.com/gomarkdown/markdown@v0.0.0-20250810172220-2e2c11897d1a/html#Flags
+	RendererFlags = html.CommonFlags
 )
 
 var (
@@ -107,7 +108,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	err = templates.ExecuteTemplate(w, "index.tmpl", struct {
 		Subdirectories []NavigationElement
-		Files       []NavigationElement
+		Files          []NavigationElement
 	}{categories, articles})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -119,21 +120,175 @@ func HandleView(w http.ResponseWriter, r *http.Request, relPath string) {
 	absPath := path.Join(cwd, "wiki", relPath)
 	fi, err := os.Stat(absPath)
 
+	//log.Printf("a: %s, r: %s", absPath, relPath)
+
 	// try if that's a directory we can use
 	if err == nil && fi.IsDir() {
-		RenderDirectory(w, "directory.tmpl", path.Join("wiki", relPath))
+		RenderDirectory(w, r, relPath, absPath)
 	} else {
-		absPath += ".md"
-		content, err := os.ReadFile(absPath)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		contentHtml := string(ParseMarkdown(content))
-		RenderArticle(w, fmt.Sprintf("wiki/%s", relPath), contentHtml)
+		RenderArticle(w, r, absPath)
 	}
 }
 
+type Data struct {
+	Title      string
+	Navigation map[NavigationElement][]NavigationElement
+	Content    template.HTML
+	Directory  struct {
+		Articles []NavigationElement
+		Topics   []NavigationElement
+	}
+}
+
+func RenderArticle(w http.ResponseWriter, r *http.Request, absPath string) {
+
+	// 1) title
+	if absPath[len(absPath)-1:] == "/" {
+		absPath = absPath[:len(absPath)-1]
+	}
+	split := strings.Split(absPath, "/")
+	title := split[len(split)-1]
+
+	// 2) content
+	absPath += ".md"
+	f, err := os.ReadFile(absPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	content := template.HTML(ParseMarkdown(f))
+
+	// 3) navigation
+	nav, err := GenerateSidebarContents()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// render
+	err = templates.ExecuteTemplate(w, "layout.tmpl", Data{
+		Title:      title,
+		Navigation: nav,
+		Content:    content,
+	})
+	if err != nil {
+		println(err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func RenderDirectory(w http.ResponseWriter, r *http.Request, relPath, absPath string) {
+
+	//log.Printf("a: %s, r: %s", absPath, relPath)
+
+	p := strings.Split(absPath, "/")
+	title := p[len(p)-1]
+
+	d, err := os.ReadDir(absPath)
+	if err != nil {
+		//http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.NotFound(w, r)
+		return
+	}
+
+	contents := struct {
+		Articles []NavigationElement
+		Topics   []NavigationElement
+	}{
+		Articles: make([]NavigationElement, 0),
+		Topics:   make([]NavigationElement, 0),
+	}
+
+	for _, el := range d {
+		if el.IsDir() {
+			contents.Topics = append(contents.Topics, NavigationElement{
+				Title: el.Name(),
+				Link:  path.Join("/", "wiki", relPath, el.Name()),
+			})
+		} else {
+			if el.Name()[len(el.Name())-3:] != ".md" {
+				continue
+			}
+			contents.Articles = append(contents.Articles, NavigationElement{
+				Title: el.Name()[:len(el.Name())-3],
+				Link:  path.Join("/", "wiki", relPath, el.Name()[:len(el.Name())-3]), // this should have the file ending ".md"
+			})
+		}
+	}
+
+	nav, err := GenerateSidebarContents()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = templates.ExecuteTemplate(w, "layout.tmpl", Data{
+		Title:      title,
+		Navigation: nav,
+		Directory:  contents,
+	})
+	if err != nil {
+		println(err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+func GenerateSidebarContents() (map[NavigationElement][]NavigationElement, error) {
+	// TODO alphabetisch sortiert statt map wär cool aber später; other als letztes
+	result := make(map[NavigationElement][]NavigationElement)
+	d, err := os.ReadDir(path.Join(cwd, "wiki"))
+	if err != nil {
+		return nil, errors.New(err.Error())
+	}
+	other := NavigationElement{
+		Title: "other",
+		Link:  "/", // TODO all unordered links go back to index
+	}
+	result[other] = make([]NavigationElement, 0)
+	for _, dirEntry := range d {
+		title := dirEntry.Name()
+		link := fmt.Sprintf("/wiki/%s", title)
+		if dirEntry.IsDir() {
+			e := NavigationElement{
+				Title: title,
+				Link:  link,
+			}
+			result[e] = make([]NavigationElement, 0)
+			p := path.Join(cwd, "wiki", title)
+			subdir, err := os.ReadDir(p)
+			if err != nil {
+				return nil, err
+			}
+			for _, de := range subdir {
+				deTitle := de.Name()
+				if !de.IsDir() {
+					if deTitle[len(deTitle)-3:] != ".md" {
+						continue
+					}
+					deTitle = deTitle[:len(deTitle)-3] // remove file extension
+				}
+				result[e] = append(result[e], NavigationElement{
+					Title: deTitle,
+					Link:  fmt.Sprintf("/wiki/%s/%s", title, deTitle),
+				})
+			}
+		} else {
+			if title[len(title)-3:] != ".md" {
+				continue
+			}
+			title = title[:len(title)-3] // remove file extension
+			result[other] = append(result[other], NavigationElement{
+				Title: title,
+				Link:  link,
+			})
+		}
+	}
+	return result, nil
+}
+
+/*
+// NEEDSFIX
 func RenderDirectory(w http.ResponseWriter, tmpl string, wikiPath string) {
 	// get content
 	absPath := path.Join(cwd, wikiPath)
@@ -181,7 +336,10 @@ func RenderDirectory(w http.ResponseWriter, tmpl string, wikiPath string) {
 		return
 	}
 }
+*/
 
+/*
+// DEPRECATED
 func RenderArticle(w http.ResponseWriter, wikiPath string, content string) {
 	// TODO create the content here, parsing etc.
 	err := templates.ExecuteTemplate(w, "layout.tmpl", PageData{
@@ -192,7 +350,9 @@ func RenderArticle(w http.ResponseWriter, wikiPath string, content string) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
+*/
 
+// DEPRECATED
 func GenerateNavigation(wikiPath string) []NavigationElement {
 	result := make([]NavigationElement, 0)
 	parts := strings.Split(wikiPath, "/")

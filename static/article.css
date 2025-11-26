@@ -1,0 +1,132 @@
+:root {
+    --header-height: 48px;
+    --page-width: 800px;
+}
+
+* {
+    box-sizing: border-box;
+    scrollbar-width: none;
+ }
+
+body {
+    padding: 0;
+    margin: 0;
+    font-family: Georgia, serif;
+    font-size: 17;
+    line-height: 1.5;
+}
+
+h1, h2, h3, h4 {
+    font-weight: 400;
+}
+
+ul {
+    margin: 0px;
+    padding-left: 20px;
+}
+
+pre {
+    background-color: rgb(0, 0, 0, 0.05);
+    padding: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.container-sidebar a {
+    color: inherit;
+    text-decoration: none;
+}
+
+.container-sidebar a:hover {
+    color: hotpink;
+}
+
+/* utility classes */
+
+.card {
+    padding: 0px 12px 0px 12px;
+    background-color: white;
+    border-radius: 12px;
+    border: 1px solid rgb(0, 0, 0, 0.1);
+    box-shadow: 0px 1px 4px 0px rgb(0, 0, 0, 0.15);
+}
+
+/* page layout */
+
+.container {
+    display: flex;
+    flex-direction: column;
+    max-width: var(--page-width);
+    height: 100vh;
+    margin: auto;
+    padding: 8px
+}
+
+.container-header {
+    width: 100%;
+    height: var(--header-height);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.container-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+/* page body layout */
+
+.container-sidebar {
+    width: 200px;
+    flex-shrink: 0;
+    overflow-y: auto;
+}
+
+.container-content {
+    width: 100%;
+    overflow-y: auto;
+}
+
+/* header */
+
+.header {
+    width: 100%;
+    height: 75%;
+    margin: auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.header-navigation {
+
+}
+
+.header-option {
+
+}
+
+/* sidebar */
+
+.sidebar {
+    padding: 8px;
+}
+
+/* content */
+.content {
+    padding: 8px;
+}
+
+/* smaller screens */
+@media (max-width: 700px) {
+    .container-sidebar {
+        display: none
+    }
+    .container-conent {
+        width: 100%;
+    }
+}
+
