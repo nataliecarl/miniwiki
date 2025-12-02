@@ -174,7 +174,7 @@ func staticVars(s string) string {
 		"{-{year-}-}", fmt.Sprintf("%d", now.Year()-1),
         "{-{month}-}", fmt.Sprintf("%02d", int(now.Month())),
 		"{-{namedmonth}-}", fmt.Sprintf("%s", monthIntToString(int(now.Month()))),
-		"{-{namedmonthshort}-}", fmt.Sprintf("%s", strings.ToLower(monthIntToString(month))[0:3]),
+		"{-{namedmonthshort}-}", fmt.Sprintf("%s", strings.ToLower(monthIntToString(int(now.Month())))[0:3]),
     ).Replace(s)
 }
 
