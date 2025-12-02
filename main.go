@@ -9,6 +9,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/gomarkdown/markdown"
 	"github.com/gomarkdown/markdown/html"
@@ -140,6 +141,60 @@ type Data struct {
 	}
 }
 
+func applyDynamicVars(s string) string {
+    now := time.Now()
+	s = staticVars(s)
+	relativeYear := func(monthStr string) int {
+		month, err := monthStringToInt(monthStr)
+		if err != nil {
+			return 0
+		}
+
+		if int(now.Month()) > month {
+			return now.Year() + 1
+		} else {
+			return now.Year()
+		}
+	}
+	re := regexp.MustCompile(`\{\-\{dynamicyear:([a-zA-Z]+)\}\-\}`)
+	s = re.ReplaceAllStringFunc(s, func(match string) string {
+		monthStr := re.FindStringSubmatch(match)[1]
+		relYear := relativeYear(monthStr)
+		return fmt.Sprintf("%d", relYear)
+	})
+
+    return s
+}
+
+func staticVars(s string) string {
+	now := time.Now()
+	return strings.NewReplacer(
+        "{-{year}-}", fmt.Sprintf("%d", now.Year()),
+		"{-{year+}-}", fmt.Sprintf("%d", now.Year()+1),
+		"{-{year-}-}", fmt.Sprintf("%d", now.Year()-1),
+        "{-{month}-}", fmt.Sprintf("%02d", int(now.Month())),
+		"{-{namedmonth}-}", fmt.Sprintf("%s", monthIntToString(int(now.Month()))),
+		"{-{namedmonthshort}-}", fmt.Sprintf("%s", strings.ToLower(monthIntToString(month))[0:3]),
+    ).Replace(s)
+}
+
+func monthIntToString(month int) string {
+	months := map[int]string{1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June", 7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December",}
+	if monthStr, exists := months[month]; exists {
+		return monthStr
+	}
+	return ""
+}
+
+func monthStringToInt(monthStr string) (int, error) {
+	months := map[string]int{"jan": 1,"feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,}
+	monthStr = strings.ToLower(monthStr) // Ensure case-insensitivity
+	if month, exists := months[monthStr]; exists {
+		return month, nil
+	}
+	return 0, fmt.Errorf("invalid month: %s", monthStr)
+}
+
 func RenderArticle(w http.ResponseWriter, r *http.Request, absPath string) {
 
 	// 1) title
@@ -156,7 +211,8 @@ func RenderArticle(w http.ResponseWriter, r *http.Request, absPath string) {
 		http.NotFound(w, r)
 		return
 	}
-	content := template.HTML(ParseMarkdown(f))
+	md := applyDynamicVars(string(f))
+	content := template.HTML(ParseMarkdown([]byte(md)))
 
 	// 3) navigation
 	nav, err := GenerateSidebarContents()
