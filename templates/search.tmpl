@@ -1,0 +1,28 @@
+{{ define "search" }}
+    <h1>Search</h1>
+    {{ if .Search.HasQuery }}
+        <p class="search-meta">
+            {{ .Search.TotalCount }} result{{ if ne .Search.TotalCount 1 }}s{{ end }} for
+            <code>{{ .Search.Query }}</code>
+        </p>
+        {{ if .Search.Results }}
+            <ul class="search-results">
+                {{ range .Search.Results }}
+                    <li class="search-result-item">
+                        <a class="search-result-title" href="{{ .Link }}">{{ .Title }}</a>
+                        <div class="search-result-path">{{ .Path }}</div>
+                        {{ if .RenderedSnippet }}
+                            <div class="search-result-snippet rendered-snippet">{{ .RenderedSnippet }}</div>
+                        {{ else if .HighlightedSnippet }}
+                            <p class="search-result-snippet">{{ .HighlightedSnippet }}</p>
+                        {{ end }}
+                    </li>
+                {{ end }}
+            </ul>
+        {{ else }}
+            <p class="search-empty">No results found.</p>
+        {{ end }}
+    {{ else }}
+        <p class="search-empty">Type a query to search page names and markdown content.</p>
+    {{ end }}
+{{ end }}

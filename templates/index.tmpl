@@ -7,11 +7,22 @@
         <title>MiniWiki</title>
         <link href="/static/style.css" rel="stylesheet" />
         <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+        <script src="/static/search.js" defer></script>
     </head>
     <body>
         <h1>
             <center>Welcome to MiniWiki!</center>
         </h1>
+        <form class="index-search-form" action="/search" method="get">
+            <input
+                class="index-search-input"
+                type="search"
+                name="q"
+                autocomplete="off"
+                data-search-suggest="true"
+                placeholder="Search pages..."
+            />
+        </form>
         <div class="card">
             This is a small, markdown-based Wiki.
             The web view can be used to read and explore the wiki, while edits 
