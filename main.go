@@ -1,14 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	stdhtml "html"
 	"html/template"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gomarkdown/markdown"
@@ -36,6 +42,12 @@ var (
 	htmlRenderer *html.Renderer
 	templates    *template.Template
 	cwd          string
+	searchIndex  = &SearchIndex{}
+	renderedBlockTagRe = regexp.MustCompile(`(?i)</?(?:p|div|h[1-6]|li|ul|ol|blockquote|pre|code|br|tr|td|th)[^>]*>`)
+	renderedAnyTagRe   = regexp.MustCompile(`(?s)<[^>]+>`)
+	heavySnippetTableRe = regexp.MustCompile(`(?m)^\s*\|.*\|\s*$`)
+	heavySnippetFenceRe = regexp.MustCompile("(?m)^\\s*```")
+	heavySnippetHTMLRe  = regexp.MustCompile(`(?i)<\s*(?:table|div|aside|details|blockquote|pre)\b`)
 )
 
 func init() {
@@ -60,6 +72,42 @@ type DirectoryStructure struct {
 	Files          []NavigationElement
 }
 
+type SearchDoc struct {
+	Title             string
+	Link              string
+	Path              string
+	Content           string
+	NormalizedTitle   string
+	NormalizedPath    string
+	NormalizedContent string
+}
+
+type SearchResult struct {
+	Title              string
+	Link               string
+	Path               string
+	RenderedSnippet    template.HTML
+	PlainSnippet       string
+	HighlightedSnippet template.HTML
+	Score              int
+}
+
+type SearchSuggestion struct {
+	Title        string `json:"title"`
+	Link         string `json:"link"`
+	Path         string `json:"path"`
+	Category     string `json:"category"`
+	MatchPreview string `json:"match_preview,omitempty"`
+}
+
+type SearchIndex struct {
+	mu               sync.RWMutex
+	docs             []SearchDoc
+	lastIndexedAt    time.Time
+	latestContentMod time.Time
+	initialized      bool
+}
+
 type PageData struct {
 	Navigation []NavigationElement
 	Article    template.HTML
@@ -76,6 +124,8 @@ func main() {
 	fs := http.FileServer(http.Dir("./static"))
 
 	http.HandleFunc("/", handleIndex)
+	http.HandleFunc("/search", HandleSearch)
+	http.HandleFunc("/search/suggest", HandleSearchSuggest)
 	http.HandleFunc("/wiki/", MakeHandler(HandleView))
 	http.Handle("/static/", http.StripPrefix("/static/", fs))
 
@@ -91,18 +141,17 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 	articles := make([]NavigationElement, 0)
 	for _, x := range wikiContent {
 		title := x.Name()
-		link := fmt.Sprintf("/wiki/%s", title)
 		if x.IsDir() {
 			categories = append(categories, NavigationElement{
 				Title: title,
-				Link:  link,
+				Link:  fmt.Sprintf("/wiki/%s", title),
 			})
 		} else {
-			if title[:len(title)-3] == ".md" {
+			if strings.HasSuffix(title, ".md") {
 				title = title[:len(title)-3]
 				articles = append(articles, NavigationElement{
 					Title: title,
-					Link:  link,
+					Link:  fmt.Sprintf("/wiki/%s", title),
 				})
 			}
 		}
@@ -133,16 +182,518 @@ func HandleView(w http.ResponseWriter, r *http.Request, relPath string) {
 
 type Data struct {
 	Title      string
+	Mode       string
 	Navigation map[NavigationElement][]NavigationElement
 	Content    template.HTML
 	Directory  struct {
 		Articles []NavigationElement
 		Topics   []NavigationElement
 	}
+	Search struct {
+		Query      string
+		HasQuery   bool
+		Results    []SearchResult
+		IndexedAt  time.Time
+		TotalCount int
+	}
+}
+
+func normalizeForSearch(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+}
+
+func buildWikiLinkFromAbsPath(absPath string) (string, string) {
+	wikiRoot := path.Join(cwd, "wiki")
+	relPath, err := filepath.Rel(wikiRoot, absPath)
+	if err != nil {
+		return "", ""
+	}
+	relPath = filepath.ToSlash(relPath)
+	if !strings.HasSuffix(relPath, ".md") {
+		return "", ""
+	}
+	withoutExt := strings.TrimSuffix(relPath, ".md")
+	return withoutExt, path.Join("/wiki", withoutExt)
+}
+
+func latestWikiMarkdownModTime(root string) (time.Time, error) {
+	latest := time.Time{}
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	return latest, nil
+}
+
+func collectMarkdownDocs(root string) ([]SearchDoc, time.Time, error) {
+	docs := make([]SearchDoc, 0)
+	latest := time.Time{}
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		relPath, link := buildWikiLinkFromAbsPath(p)
+		if relPath == "" {
+			return nil
+		}
+		title := strings.TrimSuffix(path.Base(relPath), ".md")
+		content := string(body)
+		docs = append(docs, SearchDoc{
+			Title:             title,
+			Link:              link,
+			Path:              relPath,
+			Content:           content,
+			NormalizedTitle:   normalizeForSearch(title),
+			NormalizedPath:    normalizeForSearch(relPath),
+			NormalizedContent: normalizeForSearch(content),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	sort.Slice(docs, func(i, j int) bool {
+		return docs[i].Path < docs[j].Path
+	})
+	return docs, latest, nil
+}
+
+func ensureSearchIndexFresh() error {
+	root := path.Join(cwd, "wiki")
+	latest, err := latestWikiMarkdownModTime(root)
+	if err != nil {
+		return err
+	}
+	searchIndex.mu.RLock()
+	initialized := searchIndex.initialized
+	latestIndexed := searchIndex.latestContentMod
+	searchIndex.mu.RUnlock()
+	if initialized && latest.Equal(latestIndexed) {
+		return nil
+	}
+	docs, latestContentMod, err := collectMarkdownDocs(root)
+	if err != nil {
+		return err
+	}
+	searchIndex.mu.Lock()
+	searchIndex.docs = docs
+	searchIndex.lastIndexedAt = time.Now()
+	searchIndex.latestContentMod = latestContentMod
+	searchIndex.initialized = true
+	searchIndex.mu.Unlock()
+	return nil
+}
+
+func findMatchIndex(haystack, needle []rune) int {
+	if len(needle) == 0 || len(haystack) < len(needle) {
+		return -1
+	}
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		match := true
+		for j := range needle {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
+func makeSearchSnippet(content, query string) string {
+	const maxRunes = 180
+	text := markdownToRenderedPlainText(content)
+	if text == "" {
+		return ""
+	}
+	textRunes := []rune(text)
+	if len(textRunes) <= maxRunes {
+		return text
+	}
+	queryRunes := []rune(strings.ToLower(strings.TrimSpace(query)))
+	lowerRunes := []rune(strings.ToLower(text))
+	match := findMatchIndex(lowerRunes, queryRunes)
+	if match < 0 {
+		snippet := string(textRunes[:maxRunes])
+		return snippet + "..."
+	}
+	start := match - (maxRunes / 3)
+	if start < 0 {
+		start = 0
+	}
+	end := start + maxRunes
+	if end > len(textRunes) {
+		end = len(textRunes)
+		start = end - maxRunes
+		if start < 0 {
+			start = 0
+		}
+	}
+	snippet := string(textRunes[start:end])
+	if start > 0 {
+		snippet = "..." + snippet
+	}
+	if end < len(textRunes) {
+		snippet += "..."
+	}
+	return snippet
+}
+
+func highlightSearchPhrase(snippet, query string) template.HTML {
+	escaped := template.HTMLEscapeString(snippet)
+	trimmedQuery := strings.TrimSpace(query)
+	if trimmedQuery == "" {
+		return template.HTML(escaped)
+	}
+	re, err := regexp.Compile("(?i)" + regexp.QuoteMeta(trimmedQuery))
+	if err != nil {
+		return template.HTML(escaped)
+	}
+	highlighted := re.ReplaceAllStringFunc(escaped, func(match string) string {
+		return "<mark>" + match + "</mark>"
+	})
+	return template.HTML(highlighted)
+}
+
+func makeRenderedSearchSnippet(content, query string) template.HTML {
+	trimmedQuery := strings.TrimSpace(query)
+	if trimmedQuery == "" {
+		rendered := string(ParseMarkdown([]byte(content)))
+		return template.HTML(rendered)
+	}
+	if strings.TrimSpace(content) == "" {
+		return template.HTML("")
+	}
+	fragment, hasHead, hasTail := extractMarkdownContextBlock(content, trimmedQuery)
+	if strings.TrimSpace(fragment) == "" {
+		return template.HTML("")
+	}
+	if isHeavyRenderedSnippet(fragment) {
+		return template.HTML("")
+	}
+	if hasHead {
+		fragment = "...\n\n" + fragment
+	}
+	if hasTail {
+		fragment += "\n\n..."
+	}
+
+	rendered := string(ParseMarkdown([]byte(fragment)))
+	return highlightRenderedHTMLText(rendered, trimmedQuery)
+}
+
+func isHeavyRenderedSnippet(fragment string) bool {
+	return heavySnippetTableRe.MatchString(fragment) ||
+		heavySnippetFenceRe.MatchString(fragment) ||
+		heavySnippetHTMLRe.MatchString(fragment)
+}
+
+func extractMarkdownContextBlock(content, query string) (string, bool, bool) {
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	if len(lines) == 0 {
+		return "", false, false
+	}
+	lowerQuery := strings.ToLower(strings.TrimSpace(query))
+	matchLine := -1
+	for i, line := range lines {
+		if strings.Contains(strings.ToLower(line), lowerQuery) {
+			matchLine = i
+			break
+		}
+	}
+	if matchLine < 0 {
+		return "", false, false
+	}
+
+	start := matchLine
+	for start > 0 && strings.TrimSpace(lines[start-1]) != "" {
+		start--
+	}
+	end := matchLine
+	for end+1 < len(lines) && strings.TrimSpace(lines[end+1]) != "" {
+		end++
+	}
+	fragment := strings.TrimSpace(strings.Join(lines[start:end+1], "\n"))
+	return fragment, start > 0, end < len(lines)-1
+}
+
+func highlightRenderedHTMLText(rendered, query string) template.HTML {
+	if strings.TrimSpace(query) == "" {
+		return template.HTML(rendered)
+	}
+	var out strings.Builder
+	segment := strings.Builder{}
+	inTag := false
+	for _, r := range rendered {
+		if r == '<' {
+			if segment.Len() > 0 {
+				out.WriteString(highlightInTextSegment(segment.String(), query))
+				segment.Reset()
+			}
+			inTag = true
+			out.WriteRune(r)
+			continue
+		}
+		if r == '>' {
+			inTag = false
+			out.WriteRune(r)
+			continue
+		}
+		if inTag {
+			out.WriteRune(r)
+		} else {
+			segment.WriteRune(r)
+		}
+	}
+	if segment.Len() > 0 {
+		out.WriteString(highlightInTextSegment(segment.String(), query))
+	}
+	return template.HTML(out.String())
+}
+
+func highlightInTextSegment(text, query string) string {
+	lowerText := strings.ToLower(text)
+	lowerQuery := strings.ToLower(query)
+	if lowerQuery == "" || !strings.Contains(lowerText, lowerQuery) {
+		return text
+	}
+	queryRunes := []rune(lowerQuery)
+	textRunes := []rune(text)
+	lowerRunes := []rune(lowerText)
+	var out strings.Builder
+	searchStart := 0
+	for searchStart < len(textRunes) {
+		next := findMatchIndex(lowerRunes[searchStart:], queryRunes)
+		if next < 0 {
+			out.WriteString(string(textRunes[searchStart:]))
+			break
+		}
+		matchStart := searchStart + next
+		matchEnd := matchStart + len(queryRunes)
+		out.WriteString(string(textRunes[searchStart:matchStart]))
+		out.WriteString("<mark>")
+		out.WriteString(string(textRunes[matchStart:matchEnd]))
+		out.WriteString("</mark>")
+		searchStart = matchEnd
+	}
+	return out.String()
+}
+
+func searchDocs(query string) ([]SearchResult, time.Time) {
+	normQuery := normalizeForSearch(query)
+	if normQuery == "" {
+		searchIndex.mu.RLock()
+		indexedAt := searchIndex.lastIndexedAt
+		searchIndex.mu.RUnlock()
+		return nil, indexedAt
+	}
+	searchIndex.mu.RLock()
+	docs := make([]SearchDoc, len(searchIndex.docs))
+	copy(docs, searchIndex.docs)
+	indexedAt := searchIndex.lastIndexedAt
+	searchIndex.mu.RUnlock()
+	results := make([]SearchResult, 0)
+	for _, doc := range docs {
+		titleHit := strings.Contains(doc.NormalizedTitle, normQuery)
+		pathHit := strings.Contains(doc.NormalizedPath, normQuery)
+		contentHit := strings.Contains(doc.NormalizedContent, normQuery)
+		if !(titleHit || pathHit || contentHit) {
+			continue
+		}
+		score := 0
+		if titleHit {
+			score += 100
+		}
+		if pathHit {
+			score += 50
+		}
+		if contentHit {
+			score += 20
+		}
+		var renderedSnippet template.HTML
+		plainSnippet := ""
+		highlightedSnippet := template.HTML("")
+		if contentHit {
+			renderedSnippet = makeRenderedSearchSnippet(doc.Content, query)
+			plainSnippet = makeSearchSnippet(doc.Content, query)
+			highlightedSnippet = highlightSearchPhrase(plainSnippet, query)
+		}
+		results = append(results, SearchResult{
+			Title:              doc.Title,
+			Link:               doc.Link,
+			Path:               doc.Path,
+			RenderedSnippet:    renderedSnippet,
+			PlainSnippet:       plainSnippet,
+			HighlightedSnippet: highlightedSnippet,
+			Score:              score,
+		})
+	}
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Score == results[j].Score {
+			return results[i].Path < results[j].Path
+		}
+		return results[i].Score > results[j].Score
+	})
+	return results, indexedAt
+}
+
+func suggestDocs(query string, limit int) []SearchSuggestion {
+	normQuery := normalizeForSearch(query)
+	if normQuery == "" {
+		return []SearchSuggestion{}
+	}
+	searchIndex.mu.RLock()
+	docs := make([]SearchDoc, len(searchIndex.docs))
+	copy(docs, searchIndex.docs)
+	searchIndex.mu.RUnlock()
+
+	type scoredSuggestion struct {
+		SearchSuggestion
+		score int
+	}
+	matches := make([]scoredSuggestion, 0)
+	for _, doc := range docs {
+		titleHas := strings.Contains(doc.NormalizedTitle, normQuery)
+		pathHas := strings.Contains(doc.NormalizedPath, normQuery)
+		contentHas := strings.Contains(doc.NormalizedContent, normQuery)
+		if !titleHas && !pathHas && !contentHas {
+			continue
+		}
+		score := 0
+		if strings.HasPrefix(doc.NormalizedTitle, normQuery) {
+			score += 140
+		}
+		if strings.HasPrefix(doc.NormalizedPath, normQuery) {
+			score += 100
+		}
+		if titleHas {
+			score += 40
+		}
+		if pathHas {
+			score += 20
+		}
+		if contentHas {
+			score += 10
+		}
+		matches = append(matches, scoredSuggestion{
+			SearchSuggestion: SearchSuggestion{
+				Title:        doc.Title,
+				Link:         doc.Link,
+				Path:         doc.Path,
+				Category:     suggestionCategory(doc.Path),
+			},
+			score: score,
+		})
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].score == matches[j].score {
+			return matches[i].Path < matches[j].Path
+		}
+		return matches[i].score > matches[j].score
+	})
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	out := make([]SearchSuggestion, 0, len(matches))
+	for _, match := range matches {
+		out = append(out, match.SearchSuggestion)
+	}
+	return out
+}
+
+func suggestionCategory(docPath string) string {
+	parts := strings.Split(strings.TrimSpace(docPath), "/")
+	if len(parts) >= 2 && parts[0] != "" {
+		return parts[0]
+	}
+	return "other"
+}
+
+func markdownToRenderedPlainText(content string) string {
+	if content == "" {
+		return ""
+	}
+	rendered := string(ParseMarkdown([]byte(content)))
+	plain := renderedBlockTagRe.ReplaceAllString(rendered, " ")
+	plain = renderedAnyTagRe.ReplaceAllString(plain, " ")
+	plain = stdhtml.UnescapeString(plain)
+	return strings.Join(strings.Fields(plain), " ")
+}
+
+func HandleSearch(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if err := ensureSearchIndexFresh(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	nav, err := GenerateSidebarContents()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	results, indexedAt := searchDocs(query)
+	data := Data{
+		Title:      "Search",
+		Mode:       "search",
+		Navigation: nav,
+	}
+	data.Search.Query = query
+	data.Search.HasQuery = query != ""
+	data.Search.Results = results
+	data.Search.IndexedAt = indexedAt
+	data.Search.TotalCount = len(results)
+	if err := templates.ExecuteTemplate(w, "layout.tmpl", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func HandleSearchSuggest(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if err := ensureSearchIndexFresh(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	suggestions := suggestDocs(query, 8)
+	if err := json.NewEncoder(w).Encode(suggestions); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func applyDynamicVars(s string) string {
-    now := time.Now()
+	now := time.Now()
 	s = staticVars(s)
 	relativeYear := func(monthStr string) int {
 		month, err := monthStringToInt(monthStr)
@@ -163,23 +714,23 @@ func applyDynamicVars(s string) string {
 		return fmt.Sprintf("%d", relYear)
 	})
 
-    return s
+	return s
 }
 
 func staticVars(s string) string {
 	now := time.Now()
 	return strings.NewReplacer(
-        "{-{year}-}", fmt.Sprintf("%d", now.Year()),
+		"{-{year}-}", fmt.Sprintf("%d", now.Year()),
 		"{-{year+}-}", fmt.Sprintf("%d", now.Year()+1),
 		"{-{year-}-}", fmt.Sprintf("%d", now.Year()-1),
-        "{-{month}-}", fmt.Sprintf("%02d", int(now.Month())),
+		"{-{month}-}", fmt.Sprintf("%02d", int(now.Month())),
 		"{-{namedmonth}-}", fmt.Sprintf("%s", monthIntToString(int(now.Month()))),
 		"{-{namedmonthshort}-}", fmt.Sprintf("%s", strings.ToLower(monthIntToString(int(now.Month())))[0:3]),
-    ).Replace(s)
+	).Replace(s)
 }
 
 func monthIntToString(month int) string {
-	months := map[int]string{1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June", 7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December",}
+	months := map[int]string{1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June", 7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
 	if monthStr, exists := months[month]; exists {
 		return monthStr
 	}
@@ -187,7 +738,7 @@ func monthIntToString(month int) string {
 }
 
 func monthStringToInt(monthStr string) (int, error) {
-	months := map[string]int{"jan": 1,"feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,}
+	months := map[string]int{"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
 	monthStr = strings.ToLower(monthStr) // Ensure case-insensitivity
 	if month, exists := months[monthStr]; exists {
 		return month, nil
@@ -224,6 +775,7 @@ func RenderArticle(w http.ResponseWriter, r *http.Request, absPath string) {
 	// render
 	err = templates.ExecuteTemplate(w, "layout.tmpl", Data{
 		Title:      title,
+		Mode:       "article",
 		Navigation: nav,
 		Content:    content,
 	})
@@ -280,6 +832,7 @@ func RenderDirectory(w http.ResponseWriter, r *http.Request, relPath, absPath st
 
 	err = templates.ExecuteTemplate(w, "layout.tmpl", Data{
 		Title:      title,
+		Mode:       "directory",
 		Navigation: nav,
 		Directory:  contents,
 	})

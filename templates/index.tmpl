@@ -7,20 +7,37 @@
         <title>MiniWiki</title>
         <link href="/static/style.css" rel="stylesheet" />
         <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+        <script src="/static/search.js" defer></script>
     </head>
     <body>
-        <h1>
-            <center>Welcome to MiniWiki!</center>
-        </h1>
+        <section class="landing-hero">
+            <h1>Welcome to MiniWiki!</h1>
+        </section>
         <div class="card">
             This is a small, markdown-based Wiki.
-            The web view can be used to read and explore the wiki, while edits 
+            The web view can be used to read and explore the wiki, while edits
             are made directly to the markdown files in the "wiki" directory.
             Using those, the web view is generated on the fly.
-            If you're new here, please check out the 
+            If you're new here, please check out the
             <a class="" href="/wiki/meta/MiniWiki Docs">documentation</a>.
-            If you want new features, find bugs, or are interested in the code, please check out the 
+            If you want new features, find bugs, or are interested in the code, please check out the
             <a class="" href="https://github.com/nataliecarl/miniwiki">repository</a>.
+        </div>
+        <div class="index-search-wrap">
+            <form class="index-search-form" action="/search" method="get">
+                <input
+                    class="index-search-input"
+                    type="search"
+                    name="q"
+                    autocomplete="off"
+                    autofocus
+                    data-search-suggest="true"
+                    data-search-autofocus="true"
+                    data-search-suggest-context="landing"
+                    placeholder="Search pages and article contents..."
+                    aria-label="Search pages"
+                />
+            </form>
         </div>
         <div class="">
         {{ template "content" . }}
