@@ -17,10 +17,30 @@
         if (!form) {
             continue;
         }
+        const suggestContext = input.dataset.searchSuggestContext || "content";
         form.classList.add("search-suggest-host");
+
+        if (input.dataset.searchAutofocus === "true") {
+            const autofocus = () => {
+                if (document.visibilityState !== "visible") {
+                    return;
+                }
+                const active = document.activeElement;
+                if (active && active !== document.body && active !== input) {
+                    return;
+                }
+                input.focus();
+                input.select();
+            };
+            window.requestAnimationFrame(() => {
+                window.setTimeout(autofocus, 40);
+            });
+            window.addEventListener("pageshow", autofocus, { once: true });
+        }
 
         const box = document.createElement("div");
         box.className = "search-suggest-box";
+        box.dataset.suggestContext = suggestContext;
         box.hidden = true;
         form.appendChild(box);
 
@@ -61,17 +81,10 @@
                 a.href = item.link;
                 a.innerHTML = `
                     <span class="search-suggest-title"></span>
-                    <span class="search-suggest-path"></span>
-                    <span class="search-suggest-preview"></span>
+                    <span class="search-suggest-meta"></span>
                 `;
                 a.querySelector(".search-suggest-title").textContent = item.title;
-                a.querySelector(".search-suggest-path").textContent = item.path;
-                const preview = a.querySelector(".search-suggest-preview");
-                if (item.match_preview) {
-                    preview.textContent = item.match_preview;
-                } else {
-                    preview.remove();
-                }
+                a.querySelector(".search-suggest-meta").textContent = item.category || "other";
                 box.appendChild(a);
             }
             box.hidden = false;
@@ -105,7 +118,7 @@
             }
             abortController = new AbortController();
             try {
-                const response = await fetch(`/search/suggest?q=${encodeURIComponent(query)}`, {
+                const response = await fetch(`/search/suggest?q=${encodeURIComponent(query)}&context=${encodeURIComponent(suggestContext)}`, {
                     signal: abortController.signal,
                 });
                 if (!response.ok) {

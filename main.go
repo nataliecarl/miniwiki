@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdhtml "html"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -42,6 +43,11 @@ var (
 	templates    *template.Template
 	cwd          string
 	searchIndex  = &SearchIndex{}
+	renderedBlockTagRe = regexp.MustCompile(`(?i)</?(?:p|div|h[1-6]|li|ul|ol|blockquote|pre|code|br|tr|td|th)[^>]*>`)
+	renderedAnyTagRe   = regexp.MustCompile(`(?s)<[^>]+>`)
+	heavySnippetTableRe = regexp.MustCompile(`(?m)^\s*\|.*\|\s*$`)
+	heavySnippetFenceRe = regexp.MustCompile("(?m)^\\s*```")
+	heavySnippetHTMLRe  = regexp.MustCompile(`(?i)<\s*(?:table|div|aside|details|blockquote|pre)\b`)
 )
 
 func init() {
@@ -90,6 +96,7 @@ type SearchSuggestion struct {
 	Title        string `json:"title"`
 	Link         string `json:"link"`
 	Path         string `json:"path"`
+	Category     string `json:"category"`
 	MatchPreview string `json:"match_preview,omitempty"`
 }
 
@@ -327,7 +334,7 @@ func findMatchIndex(haystack, needle []rune) int {
 
 func makeSearchSnippet(content, query string) string {
 	const maxRunes = 180
-	text := strings.Join(strings.Fields(content), " ")
+	text := markdownToRenderedPlainText(content)
 	if text == "" {
 		return ""
 	}
@@ -381,48 +388,65 @@ func highlightSearchPhrase(snippet, query string) template.HTML {
 }
 
 func makeRenderedSearchSnippet(content, query string) template.HTML {
-	const fragmentRunes = 520
 	trimmedQuery := strings.TrimSpace(query)
 	if trimmedQuery == "" {
 		rendered := string(ParseMarkdown([]byte(content)))
 		return template.HTML(rendered)
 	}
-
-	contentRunes := []rune(content)
-	if len(contentRunes) == 0 {
+	if strings.TrimSpace(content) == "" {
 		return template.HTML("")
 	}
-
-	match := findMatchIndex([]rune(strings.ToLower(content)), []rune(strings.ToLower(trimmedQuery)))
-	start := 0
-	end := len(contentRunes)
-	if match >= 0 {
-		start = match - (fragmentRunes / 2)
-		if start < 0 {
-			start = 0
-		}
-		end = start + fragmentRunes
-		if end > len(contentRunes) {
-			end = len(contentRunes)
-			start = end - fragmentRunes
-			if start < 0 {
-				start = 0
-			}
-		}
-	} else if len(contentRunes) > fragmentRunes {
-		end = fragmentRunes
+	fragment, hasHead, hasTail := extractMarkdownContextBlock(content, trimmedQuery)
+	if strings.TrimSpace(fragment) == "" {
+		return template.HTML("")
 	}
-
-	fragment := string(contentRunes[start:end])
-	if start > 0 {
+	if isHeavyRenderedSnippet(fragment) {
+		return template.HTML("")
+	}
+	if hasHead {
 		fragment = "...\n\n" + fragment
 	}
-	if end < len(contentRunes) {
+	if hasTail {
 		fragment += "\n\n..."
 	}
 
 	rendered := string(ParseMarkdown([]byte(fragment)))
 	return highlightRenderedHTMLText(rendered, trimmedQuery)
+}
+
+func isHeavyRenderedSnippet(fragment string) bool {
+	return heavySnippetTableRe.MatchString(fragment) ||
+		heavySnippetFenceRe.MatchString(fragment) ||
+		heavySnippetHTMLRe.MatchString(fragment)
+}
+
+func extractMarkdownContextBlock(content, query string) (string, bool, bool) {
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	if len(lines) == 0 {
+		return "", false, false
+	}
+	lowerQuery := strings.ToLower(strings.TrimSpace(query))
+	matchLine := -1
+	for i, line := range lines {
+		if strings.Contains(strings.ToLower(line), lowerQuery) {
+			matchLine = i
+			break
+		}
+	}
+	if matchLine < 0 {
+		return "", false, false
+	}
+
+	start := matchLine
+	for start > 0 && strings.TrimSpace(lines[start-1]) != "" {
+		start--
+	}
+	end := matchLine
+	for end+1 < len(lines) && strings.TrimSpace(lines[end+1]) != "" {
+		end++
+	}
+	fragment := strings.TrimSpace(strings.Join(lines[start:end+1], "\n"))
+	return fragment, start > 0, end < len(lines)-1
 }
 
 func highlightRenderedHTMLText(rendered, query string) template.HTML {
@@ -518,14 +542,21 @@ func searchDocs(query string) ([]SearchResult, time.Time) {
 		if contentHit {
 			score += 20
 		}
-		snippet := makeSearchSnippet(doc.Content, query)
+		var renderedSnippet template.HTML
+		plainSnippet := ""
+		highlightedSnippet := template.HTML("")
+		if contentHit {
+			renderedSnippet = makeRenderedSearchSnippet(doc.Content, query)
+			plainSnippet = makeSearchSnippet(doc.Content, query)
+			highlightedSnippet = highlightSearchPhrase(plainSnippet, query)
+		}
 		results = append(results, SearchResult{
 			Title:              doc.Title,
 			Link:               doc.Link,
 			Path:               doc.Path,
-			RenderedSnippet:    makeRenderedSearchSnippet(doc.Content, query),
-			PlainSnippet:       snippet,
-			HighlightedSnippet: highlightSearchPhrase(snippet, query),
+			RenderedSnippet:    renderedSnippet,
+			PlainSnippet:       plainSnippet,
+			HighlightedSnippet: highlightedSnippet,
 			Score:              score,
 		})
 	}
@@ -573,17 +604,15 @@ func suggestDocs(query string, limit int) []SearchSuggestion {
 		if pathHas {
 			score += 20
 		}
-		preview := ""
 		if contentHas {
 			score += 10
-			preview = makeSuggestionPreview(doc.Content, query)
 		}
 		matches = append(matches, scoredSuggestion{
 			SearchSuggestion: SearchSuggestion{
 				Title:        doc.Title,
 				Link:         doc.Link,
 				Path:         doc.Path,
-				MatchPreview: preview,
+				Category:     suggestionCategory(doc.Path),
 			},
 			score: score,
 		})
@@ -604,42 +633,23 @@ func suggestDocs(query string, limit int) []SearchSuggestion {
 	return out
 }
 
-func makeSuggestionPreview(content, query string) string {
-	const maxRunes = 110
-	condensed := strings.Join(strings.Fields(content), " ")
-	if condensed == "" {
+func suggestionCategory(docPath string) string {
+	parts := strings.Split(strings.TrimSpace(docPath), "/")
+	if len(parts) >= 2 && parts[0] != "" {
+		return parts[0]
+	}
+	return "other"
+}
+
+func markdownToRenderedPlainText(content string) string {
+	if content == "" {
 		return ""
 	}
-	condensedRunes := []rune(condensed)
-	if len(condensedRunes) <= maxRunes {
-		return condensed
-	}
-	queryRunes := []rune(strings.ToLower(strings.TrimSpace(query)))
-	lowerRunes := []rune(strings.ToLower(condensed))
-	match := findMatchIndex(lowerRunes, queryRunes)
-	if match < 0 {
-		return string(condensedRunes[:maxRunes]) + "..."
-	}
-	start := match - (maxRunes / 3)
-	if start < 0 {
-		start = 0
-	}
-	end := start + maxRunes
-	if end > len(condensedRunes) {
-		end = len(condensedRunes)
-		start = end - maxRunes
-		if start < 0 {
-			start = 0
-		}
-	}
-	preview := string(condensedRunes[start:end])
-	if start > 0 {
-		preview = "..." + preview
-	}
-	if end < len(condensedRunes) {
-		preview += "..."
-	}
-	return preview
+	rendered := string(ParseMarkdown([]byte(content)))
+	plain := renderedBlockTagRe.ReplaceAllString(rendered, " ")
+	plain = renderedAnyTagRe.ReplaceAllString(plain, " ")
+	plain = stdhtml.UnescapeString(plain)
+	return strings.Join(strings.Fields(plain), " ")
 }
 
 func HandleSearch(w http.ResponseWriter, r *http.Request) {
