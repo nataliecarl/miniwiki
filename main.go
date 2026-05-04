@@ -1,13 +1,21 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	stdhtml "html"
 	"html/template"
 	"io/fs"
+	"log"
+	"math/big"
 	"net/http"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
@@ -23,6 +31,11 @@ import (
 )
 
 const (
+	DefaultAddr    = ":8080"
+	DefaultCertDir = "./certs"
+	DefaultCert    = "selfsigned.crt"
+	DefaultKey     = "selfsigned.key"
+
 	ParserFlags = parser.CommonExtensions |
 		parser.NoEmptyLineBeforeBlock |
 		parser.NoIntraEmphasis |
@@ -39,12 +52,12 @@ const (
 )
 
 var (
-	htmlRenderer *html.Renderer
-	templates    *template.Template
-	cwd          string
-	searchIndex  = &SearchIndex{}
-	renderedBlockTagRe = regexp.MustCompile(`(?i)</?(?:p|div|h[1-6]|li|ul|ol|blockquote|pre|code|br|tr|td|th)[^>]*>`)
-	renderedAnyTagRe   = regexp.MustCompile(`(?s)<[^>]+>`)
+	htmlRenderer        *html.Renderer
+	templates           *template.Template
+	cwd                 string
+	searchIndex         = &SearchIndex{}
+	renderedBlockTagRe  = regexp.MustCompile(`(?i)</?(?:p|div|h[1-6]|li|ul|ol|blockquote|pre|code|br|tr|td|th)[^>]*>`)
+	renderedAnyTagRe    = regexp.MustCompile(`(?s)<[^>]+>`)
 	heavySnippetTableRe = regexp.MustCompile(`(?m)^\s*\|.*\|\s*$`)
 	heavySnippetFenceRe = regexp.MustCompile("(?m)^\\s*```")
 	heavySnippetHTMLRe  = regexp.MustCompile(`(?i)<\s*(?:table|div|aside|details|blockquote|pre)\b`)
@@ -117,14 +130,14 @@ type APIHomeResponse struct {
 }
 
 type APIWikiResponse struct {
-	Mode      string              `json:"mode"`
-	Title     string              `json:"title"`
-	ContentHTML string            `json:"content_html,omitempty"`
-	Content   string              `json:"content,omitempty"`
-	Articles  []NavigationElement `json:"articles,omitempty"`
-	Topics    []NavigationElement `json:"topics,omitempty"`
-	RelPath   string              `json:"rel_path,omitempty"`
-	UpdatedAt string              `json:"updated_at,omitempty"`
+	Mode        string              `json:"mode"`
+	Title       string              `json:"title"`
+	ContentHTML string              `json:"content_html,omitempty"`
+	Content     string              `json:"content,omitempty"`
+	Articles    []NavigationElement `json:"articles,omitempty"`
+	Topics      []NavigationElement `json:"topics,omitempty"`
+	RelPath     string              `json:"rel_path,omitempty"`
+	UpdatedAt   string              `json:"updated_at,omitempty"`
 }
 
 type APISearchResult struct {
@@ -173,7 +186,100 @@ func main() {
 	// Serve the SPA for all non-API routes.
 	http.HandleFunc("/", HandleAppShell)
 
-	http.ListenAndServe(":8080", nil)
+	addr := envOrDefault("MINIWIKI_ADDR", DefaultAddr)
+	certPath := envOrDefault("MINIWIKI_TLS_CERT", path.Join(DefaultCertDir, DefaultCert))
+	keyPath := envOrDefault("MINIWIKI_TLS_KEY", path.Join(DefaultCertDir, DefaultKey))
+
+	if err := ensureSelfSignedTLSCert(certPath, keyPath); err != nil {
+		log.Fatalf("failed to prepare TLS certificate: %v", err)
+	}
+
+	log.Printf("miniwiki listening on https://localhost%s", addr)
+	log.Fatal(http.ListenAndServeTLS(addr, certPath, keyPath, nil))
+}
+
+func envOrDefault(key, fallback string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+func ensureSelfSignedTLSCert(certPath, keyPath string) error {
+	if _, certErr := os.Stat(certPath); certErr == nil {
+		if _, keyErr := os.Stat(keyPath); keyErr == nil {
+			return nil
+		}
+	}
+
+	if err := os.MkdirAll(path.Dir(certPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(path.Dir(keyPath), 0o755); err != nil {
+		return err
+	}
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serialNumber, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		return err
+	}
+
+	certTemplate := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"Miniwiki"},
+			CommonName:   "localhost",
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(1, 0, 0),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
+	}
+
+	ipv4, err := netip.ParseAddr("127.0.0.1")
+	if err != nil {
+		return err
+	}
+	ipv6, err := netip.ParseAddr("::1")
+	if err != nil {
+		return err
+	}
+	certTemplate.IPAddresses = append(certTemplate.IPAddresses, ipv4.AsSlice(), ipv6.AsSlice())
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, certTemplate, certTemplate, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return err
+	}
+
+	certOut, err := os.Create(certPath)
+	if err != nil {
+		return err
+	}
+	defer certOut.Close()
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+		return err
+	}
+
+	keyOut, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer keyOut.Close()
+	keyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
+	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyBytes}); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func HandleAppShell(w http.ResponseWriter, r *http.Request) {
@@ -371,10 +477,10 @@ func HandleWikiAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(APIWikiResponse{
-		Mode:       "article",
-		Title:      title,
-		RelPath:    relPath,
-		Content:    content,
+		Mode:        "article",
+		Title:       title,
+		RelPath:     relPath,
+		Content:     content,
 		ContentHTML: content,
 	})
 }
@@ -901,10 +1007,10 @@ func suggestDocs(query string, limit int) []SearchSuggestion {
 		}
 		matches = append(matches, scoredSuggestion{
 			SearchSuggestion: SearchSuggestion{
-				Title:        doc.Title,
-				Link:         doc.Link,
-				Path:         doc.Path,
-				Category:     suggestionCategory(doc.Path),
+				Title:    doc.Title,
+				Link:     doc.Link,
+				Path:     doc.Path,
+				Category: suggestionCategory(doc.Path),
 			},
 			score: score,
 		})
