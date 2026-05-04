@@ -63,8 +63,8 @@ func init() {
 }
 
 type NavigationElement struct {
-	Title string
-	Link  string
+	Title string `json:"title"`
+	Link  string `json:"link"`
 }
 
 type DirectoryStructure struct {
@@ -100,6 +100,42 @@ type SearchSuggestion struct {
 	MatchPreview string `json:"match_preview,omitempty"`
 }
 
+type APINavigationSection struct {
+	Title string              `json:"title"`
+	Link  string              `json:"link"`
+	Items []NavigationElement `json:"items"`
+}
+
+type APIHomeResponse struct {
+	Categories []NavigationElement `json:"categories"`
+	Articles   []NavigationElement `json:"articles"`
+	Landing    struct {
+		Title       string `json:"title"`
+		ContentHTML string `json:"content_html"`
+		Link        string `json:"link"`
+	} `json:"landing"`
+}
+
+type APIWikiResponse struct {
+	Mode      string              `json:"mode"`
+	Title     string              `json:"title"`
+	ContentHTML string            `json:"content_html,omitempty"`
+	Content   string              `json:"content,omitempty"`
+	Articles  []NavigationElement `json:"articles,omitempty"`
+	Topics    []NavigationElement `json:"topics,omitempty"`
+	RelPath   string              `json:"rel_path,omitempty"`
+	UpdatedAt string              `json:"updated_at,omitempty"`
+}
+
+type APISearchResult struct {
+	Title            string `json:"title"`
+	Link             string `json:"link"`
+	Path             string `json:"path"`
+	RenderedSnippet  string `json:"rendered_snippet,omitempty"`
+	PlainSnippet     string `json:"plain_snippet,omitempty"`
+	HighlightedPlain string `json:"highlighted_plain,omitempty"`
+}
+
 type SearchIndex struct {
 	mu               sync.RWMutex
 	docs             []SearchDoc
@@ -121,15 +157,258 @@ func ParseMarkdown(document []byte) []byte {
 }
 
 func main() {
-	fs := http.FileServer(http.Dir("./static"))
+	staticFS := http.FileServer(http.Dir("./static"))
+	http.Handle("/static/", http.StripPrefix("/static/", staticFS))
 
-	http.HandleFunc("/", handleIndex)
-	http.HandleFunc("/search", HandleSearch)
+	// API endpoints used by the React frontend.
+	http.HandleFunc("/api/navigation", HandleNavigationAPI)
+	http.HandleFunc("/api/home", HandleHomeAPI)
+	http.HandleFunc("/api/wiki", HandleWikiAPI)
+	http.HandleFunc("/api/search", HandleSearchAPI)
+	http.HandleFunc("/api/search/suggest", HandleSearchSuggest)
+
+	// Keep legacy suggestion endpoint for backward compatibility.
 	http.HandleFunc("/search/suggest", HandleSearchSuggest)
-	http.HandleFunc("/wiki/", MakeHandler(HandleView))
-	http.Handle("/static/", http.StripPrefix("/static/", fs))
+
+	// Serve the SPA for all non-API routes.
+	http.HandleFunc("/", HandleAppShell)
 
 	http.ListenAndServe(":8080", nil)
+}
+
+func HandleAppShell(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	requestPath := path.Clean(strings.TrimPrefix(r.URL.Path, "/"))
+	if requestPath == "." {
+		requestPath = ""
+	}
+	distRoot := path.Join(cwd, "frontend", "dist")
+	if requestPath != "" {
+		filePath := path.Join(distRoot, requestPath)
+		if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+			http.ServeFile(w, r, filePath)
+			return
+		}
+	}
+	indexPath := path.Join(distRoot, "index.html")
+	if _, err := os.Stat(indexPath); err != nil {
+		http.Error(w, "frontend build not found, run frontend build first", http.StatusServiceUnavailable)
+		return
+	}
+	http.ServeFile(w, r, indexPath)
+}
+
+func listRootWikiEntries() ([]NavigationElement, []NavigationElement, error) {
+	wikiContent, err := os.ReadDir("./wiki")
+	if err != nil {
+		return nil, nil, err
+	}
+	categories := make([]NavigationElement, 0)
+	articles := make([]NavigationElement, 0)
+	for _, x := range wikiContent {
+		title := x.Name()
+		if x.IsDir() {
+			categories = append(categories, NavigationElement{
+				Title: title,
+				Link:  fmt.Sprintf("/wiki/%s", title),
+			})
+			continue
+		}
+		if strings.HasSuffix(title, ".md") {
+			title = title[:len(title)-3]
+			if strings.EqualFold(title, "README") {
+				continue
+			}
+			articles = append(articles, NavigationElement{
+				Title: title,
+				Link:  fmt.Sprintf("/wiki/%s", title),
+			})
+		}
+	}
+	sort.Slice(categories, func(i, j int) bool { return categories[i].Title < categories[j].Title })
+	sort.Slice(articles, func(i, j int) bool { return articles[i].Title < articles[j].Title })
+	return categories, articles, nil
+}
+
+func sanitizeWikiRelPath(raw string) (string, error) {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(raw, "/"))
+	if trimmed == "" {
+		return "", nil
+	}
+	clean := path.Clean(trimmed)
+	if clean == "." {
+		return "", nil
+	}
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", errors.New("invalid wiki path")
+	}
+	return clean, nil
+}
+
+func loadArticleByRelPath(relPath string) (string, string, error) {
+	absPath := path.Join(cwd, "wiki", relPath)
+	absPath += ".md"
+	f, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", "", err
+	}
+	title := path.Base(relPath)
+	md := applyDynamicVars(string(f))
+	rendered := string(ParseMarkdown([]byte(md)))
+	return title, rendered, nil
+}
+
+func loadDirectoryByRelPath(relPath string) (string, []NavigationElement, []NavigationElement, error) {
+	absPath := path.Join(cwd, "wiki", relPath)
+	d, err := os.ReadDir(absPath)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	articles := make([]NavigationElement, 0)
+	topics := make([]NavigationElement, 0)
+	for _, el := range d {
+		if el.IsDir() {
+			topics = append(topics, NavigationElement{
+				Title: el.Name(),
+				Link:  path.Join("/", "wiki", relPath, el.Name()),
+			})
+			continue
+		}
+		if !strings.HasSuffix(el.Name(), ".md") {
+			continue
+		}
+		name := strings.TrimSuffix(el.Name(), ".md")
+		articles = append(articles, NavigationElement{
+			Title: name,
+			Link:  path.Join("/", "wiki", relPath, name),
+		})
+	}
+	sort.Slice(articles, func(i, j int) bool { return articles[i].Title < articles[j].Title })
+	sort.Slice(topics, func(i, j int) bool { return topics[i].Title < topics[j].Title })
+	title := path.Base(relPath)
+	return title, articles, topics, nil
+}
+
+func convertNavigation(nav map[NavigationElement][]NavigationElement) []APINavigationSection {
+	sections := make([]APINavigationSection, 0, len(nav))
+	for key, items := range nav {
+		copiedItems := make([]NavigationElement, len(items))
+		copy(copiedItems, items)
+		sort.Slice(copiedItems, func(i, j int) bool { return copiedItems[i].Title < copiedItems[j].Title })
+		sections = append(sections, APINavigationSection{
+			Title: key.Title,
+			Link:  key.Link,
+			Items: copiedItems,
+		})
+	}
+	sort.Slice(sections, func(i, j int) bool { return sections[i].Title < sections[j].Title })
+	return sections
+}
+
+func HandleNavigationAPI(w http.ResponseWriter, _ *http.Request) {
+	nav, err := GenerateSidebarContents()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(convertNavigation(nav))
+}
+
+func HandleHomeAPI(w http.ResponseWriter, _ *http.Request) {
+	categories, articles, err := listRootWikiEntries()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	landingTitle, landingContent, landingErr := loadArticleByRelPath("README")
+	if landingErr != nil {
+		landingTitle = "MiniWiki"
+		landingContent = "<p>Welcome to MiniWiki.</p>"
+	}
+	response := APIHomeResponse{
+		Categories: categories,
+		Articles:   articles,
+	}
+	response.Landing.Title = landingTitle
+	response.Landing.ContentHTML = landingContent
+	response.Landing.Link = "/"
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func HandleWikiAPI(w http.ResponseWriter, r *http.Request) {
+	relPath, err := sanitizeWikiRelPath(r.URL.Query().Get("path"))
+	if err != nil || relPath == "" {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	absPath := path.Join(cwd, "wiki", relPath)
+	fi, statErr := os.Stat(absPath)
+	if statErr == nil && fi.IsDir() {
+		title, articles, topics, dirErr := loadDirectoryByRelPath(relPath)
+		if dirErr != nil {
+			http.Error(w, dirErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(APIWikiResponse{
+			Mode:     "directory",
+			Title:    title,
+			RelPath:  relPath,
+			Articles: articles,
+			Topics:   topics,
+		})
+		return
+	}
+	title, content, articleErr := loadArticleByRelPath(relPath)
+	if articleErr != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(APIWikiResponse{
+		Mode:       "article",
+		Title:      title,
+		RelPath:    relPath,
+		Content:    content,
+		ContentHTML: content,
+	})
+}
+
+func HandleSearchAPI(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if err := ensureSearchIndexFresh(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	results, indexedAt := searchDocs(query)
+	out := make([]APISearchResult, 0, len(results))
+	for _, result := range results {
+		out = append(out, APISearchResult{
+			Title:            result.Title,
+			Link:             result.Link,
+			Path:             result.Path,
+			RenderedSnippet:  string(result.RenderedSnippet),
+			PlainSnippet:     result.PlainSnippet,
+			HighlightedPlain: string(result.HighlightedSnippet),
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Query      string            `json:"query"`
+		TotalCount int               `json:"total_count"`
+		IndexedAt  string            `json:"indexed_at"`
+		Results    []APISearchResult `json:"results"`
+	}{
+		Query:      query,
+		TotalCount: len(out),
+		IndexedAt:  indexedAt.Format(time.RFC3339),
+		Results:    out,
+	})
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -156,10 +435,23 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	err = templates.ExecuteTemplate(w, "index.tmpl", struct {
-		Subdirectories []NavigationElement
-		Files          []NavigationElement
-	}{categories, articles})
+	nav, err := GenerateSidebarContents()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	err = templates.ExecuteTemplate(w, "layout.tmpl", Data{
+		Title:      "MiniWiki",
+		Mode:       "home",
+		Navigation: nav,
+		Directory: struct {
+			Articles []NavigationElement
+			Topics   []NavigationElement
+		}{
+			Articles: articles,
+			Topics:   categories,
+		},
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -844,17 +1136,11 @@ func RenderDirectory(w http.ResponseWriter, r *http.Request, relPath, absPath st
 }
 
 func GenerateSidebarContents() (map[NavigationElement][]NavigationElement, error) {
-	// TODO alphabetisch sortiert statt map wär cool aber später; other als letztes
 	result := make(map[NavigationElement][]NavigationElement)
 	d, err := os.ReadDir(path.Join(cwd, "wiki"))
 	if err != nil {
 		return nil, errors.New(err.Error())
 	}
-	other := NavigationElement{
-		Title: "other",
-		Link:  "/", // TODO all unordered links go back to index
-	}
-	result[other] = make([]NavigationElement, 0)
 	for _, dirEntry := range d {
 		title := dirEntry.Name()
 		link := fmt.Sprintf("/wiki/%s", title)
@@ -883,14 +1169,12 @@ func GenerateSidebarContents() (map[NavigationElement][]NavigationElement, error
 				})
 			}
 		} else {
-			if title[len(title)-3:] != ".md" {
+			if !strings.HasSuffix(title, ".md") {
 				continue
 			}
-			title = title[:len(title)-3] // remove file extension
-			result[other] = append(result[other], NavigationElement{
-				Title: title,
-				Link:  link,
-			})
+			// Root markdown files are intentionally hidden from sidebar navigation.
+			// The landing markdown is shown on "/" and accessible via the top-left brand link.
+			continue
 		}
 	}
 	return result, nil

@@ -14,7 +14,7 @@ create_ssh_key:
 
 build:
 	mkdir -p $(BIN_DIR)
-	$(GO) build -o $(BIN_DIR)/$(PROJECT_NAME) ./...
+	$(GO) build -o $(BIN_DIR)/$(PROJECT_NAME) .
 
 run:
 	./$(BIN_DIR)/$(PROJECT_NAME)

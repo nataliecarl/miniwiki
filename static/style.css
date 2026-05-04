@@ -19,32 +19,56 @@
     font-style: italic;
 }
 
-/* -------------------------------------------------------
-   MiniWiki — Clean, readable, modern wiki styling
-   No Tailwind required
--------------------------------------------------------- */
-
-/* ----- Base Layout ----- */
+:root {
+    --background: #f6f8fb;
+    --foreground: #182133;
+    --muted-foreground: #5f6b85;
+    --card: #ffffff;
+    --border: #dbe2f0;
+    --border-strong: #c8d0e0;
+    --primary: #3b82f6;
+    --primary-soft: #eaf2ff;
+    --focus-ring: rgba(59, 130, 246, 0.2);
+    --shadow-sm: 0 1px 3px rgba(20, 27, 45, 0.08);
+    --shadow-md: 0 6px 18px rgba(20, 27, 45, 0.1);
+}
 
 html, body {
     margin: 0;
     padding: 0;
-    font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-    color: #222;
-    background-color: #fafafa;
-    line-height: 1.65;
+    color: var(--foreground);
+    background-color: var(--background);
+    line-height: 1.55;
 }
 
-/* Center page with max width */
 body {
     max-width: 1080px;
     margin: 0 auto;
     padding: 2rem 1.25rem 4rem;
+    font-family: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 16px;
+}
+
+.landing-hero {
+    text-align: center;
+    margin: 0 auto 1rem auto;
+}
+
+.landing-hero h1 {
+    border-bottom: none;
+    padding-bottom: 0;
+    margin-bottom: 0.55rem;
+}
+
+.landing-subtitle {
+    margin: 0;
+    color: var(--muted-foreground);
+    font-size: 0.95rem;
 }
 
 .index-search-wrap {
-    width: min(760px, 100%);
-    margin: 1.1rem auto 0 auto;
+    width: min(740px, 100%);
+    margin: 0 auto 1.15rem auto;
 }
 
 .index-search-form {
@@ -54,27 +78,28 @@ body {
     margin: 0;
     position: relative;
     padding: 0 0.9rem;
-    min-height: 74px;
-    border: 2px solid #d4d4d4;
-    border-radius: 8px;
-    background: #fff;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    min-height: 70px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+    box-shadow: var(--shadow-sm);
 }
 
 .index-search-form:focus-within {
-    border-color: #9f9f9f;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+    border-color: var(--primary);
+    box-shadow: 0 0 0 4px var(--focus-ring);
 }
 
 .index-search-input {
     width: 100%;
     border: none;
     border-radius: 0;
-    padding: 0.45rem 0;
+    padding: 0.4rem 0;
     font-family: inherit;
-    font-size: clamp(1rem, 2vw, 1.2rem);
+    font-size: 1rem;
+    font-weight: 500;
     background: transparent;
-    font-weight: 400;
+    color: inherit;
 }
 
 .index-search-input:focus {
@@ -82,18 +107,7 @@ body {
 }
 
 .index-search-input::placeholder {
-    color: #7a7a7a;
-}
-
-.landing-hero {
-    text-align: center;
-    margin: 0 auto 1.2rem auto;
-}
-
-.landing-hero h1 {
-    border-bottom: none;
-    padding-bottom: 0;
-    margin-bottom: 0.8rem;
+    color: var(--muted-foreground);
 }
 
 .search-suggest-host {
@@ -105,21 +119,21 @@ body {
     top: calc(100% + 6px);
     left: 0;
     width: 100%;
-    max-height: 340px;
+    max-height: 300px;
     overflow-y: auto;
-    background: white;
-    border: 1px solid rgb(0, 0, 0, 0.15);
-    border-radius: 8px;
-    box-shadow: 0 4px 16px rgb(0, 0, 0, 0.12);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow-md);
     z-index: 50;
 }
 
 .search-suggest-item {
     display: block;
-    padding: 8px 10px;
+    padding: 9px 10px;
     color: inherit;
     text-decoration: none;
-    border-bottom: 1px solid rgb(0, 0, 0, 0.08);
+    border-bottom: 1px solid var(--border);
 }
 
 .search-suggest-item:last-child {
@@ -128,7 +142,7 @@ body {
 
 .search-suggest-item:hover,
 .search-suggest-item.active {
-    background: rgb(0, 0, 0, 0.05);
+    background: var(--primary-soft);
 }
 
 .search-suggest-title {
@@ -139,69 +153,46 @@ body {
 .search-suggest-meta {
     display: block;
     font-size: 0.85rem;
-    color: rgb(0, 0, 0, 0.6);
-}
-
-.search-suggest-preview {
-    display: block;
-    margin-top: 2px;
-    font-size: 0.82rem;
-    color: rgb(0, 0, 0, 0.72);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* ----- Headings ----- */
-
-body {
-    font-family: Georgia, 'Times New Roman', serif;
+    color: var(--muted-foreground);
 }
 
 h1, h2, h3, h4, h5, h6 {
     font-family: inherit;
-    font-weight: bold;
+    font-weight: 600;
 }
 
 h1 {
-    font-size: 1.75rem;
-    border-bottom: 2px solid #ddd;
+    font-size: 1.65rem;
+    border-bottom: 1px solid var(--border);
     padding-bottom: 0.3rem;
     margin-top: 0;
 }
 
 h2 {
-    font-size: 1.5rem;
-    border-bottom: 1px solid #ddd;
+    font-size: 1.25rem;
+    border-bottom: 1px solid var(--border);
     padding-bottom: 0.2rem;
 }
 
-h3 { font-size: 1.25rem; }
+h3 { font-size: 1.12rem; }
 h4 { font-size: 1rem; }
 
-/* ----- Links ----- */
-
-/* Link styles */
 a {
-    color: #d8348b;
+    color: #2563eb;
     text-decoration: none;
 }
 
 a:hover {
-    color: #b62673;
+    color: #1d4ed8;
     text-decoration: underline;
 }
-
-/* ----- Paragraphs ----- */
 
 p {
     margin: 1rem 0;
 }
 
-/* ----- Lists ----- */
-
 ul, ol {
-    margin: 1rem 0 1rem 2rem;
+    margin: 1rem 0 1rem 1.4rem;
     padding: 0;
 }
 
@@ -209,29 +200,30 @@ li {
     margin: 0.3rem 0;
 }
 
-/* ----- Tables ----- */
-
 table {
     width: 100%;
     border-collapse: collapse;
     margin: 1rem 0;
-    background: white;
+    background: var(--card);
+    display: block;
+    overflow-x: auto;
 }
 
 th, td {
-    border: 1px solid #ddd;
+    border: 1px solid var(--border);
     padding: 0.5rem 0.75rem;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 th {
-    background: #f0f0f0;
-    font-weight: bold;
+    background: #f7f9fc;
+    font-weight: 600;
 }
 
-/* ----- Code Blocks ----- */
-
 code {
-    background: #f5f5f5;
+    background: #edf2f9;
     padding: 0.15rem 0.35rem;
     border-radius: 4px;
     font-size: 0.95rem;
@@ -239,31 +231,26 @@ code {
 }
 
 pre {
-    background: #f5f5f5;
+    background: #edf2f9;
     padding: 1rem;
-    border-radius: 6px;
+    border-radius: 8px;
     overflow-x: auto;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.95rem;
 }
 
-/* Make pre > code blocks look cleaner */
 pre code {
     padding: 0;
     background: none;
 }
 
-/* ----- Blockquotes ----- */
-
 blockquote {
-    border-left: 4px solid #ccc;
+    border-left: 4px solid var(--border-strong);
     padding-left: 1rem;
-    color: #555;
-    margin: 1.5rem 0;
+    color: var(--muted-foreground);
+    margin: 1.2rem 0;
     font-style: italic;
 }
-
-/* ----- Images ----- */
 
 img {
     max-width: 100%;
@@ -272,17 +259,63 @@ img {
     margin: 1rem auto;
 }
 
-/* ----- Cards / Info Boxes (for your homepage) ----- */
-
 .card {
-    background: white;
+    background: var(--card);
     padding: 1rem 1.2rem;
-    border-radius: 8px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
-    border: 1px solid #eee;
+    border-radius: 10px;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border);
 }
 
-/* ----- Footer ----- */
+.landing-intro {
+    color: var(--muted-foreground);
+}
+
+.index-content-grid {
+    margin-top: 1rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 0.9rem;
+}
+
+.index-section h2 {
+    margin-top: 0;
+    margin-bottom: 0.6rem;
+}
+
+.index-section-title {
+    font-size: 1.2rem;
+    font-weight: 700;
+}
+
+.index-list {
+    margin: 0;
+    padding-left: 1.2rem;
+}
+
+.index-list-links {
+    list-style: none;
+    padding-left: 0;
+}
+
+.index-list-links li {
+    margin: 0.25rem 0;
+}
+
+.index-link {
+    display: inline-block;
+    color: #1d4ed8;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-thickness: 1.5px;
+    font-weight: 500;
+}
+
+.index-link:hover,
+.index-link:focus-visible {
+    color: #1e40af;
+    text-decoration-thickness: 2px;
+}
 
 footer {
     text-align: center;
@@ -291,8 +324,6 @@ footer {
     margin-top: 3rem;
 }
 
-/* ----- Small Screens ----- */
-
 @media (max-width: 600px) {
     body {
         padding: 1rem;
@@ -300,16 +331,16 @@ footer {
     }
 
     .index-search-form {
-        min-height: 60px;
+        min-height: 58px;
         padding: 0 0.65rem;
     }
 
     .index-search-wrap {
-        margin: 0.9rem auto 0 auto;
+        margin: 0 auto 0.85rem auto;
     }
 
-    h1 { font-size: 1.9rem; }
-    h2 { font-size: 1.6rem; }
-    h3 { font-size: 1.3rem; }
+    .index-content-grid {
+        grid-template-columns: 1fr;
+    }
 }
 

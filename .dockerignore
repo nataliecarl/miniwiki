@@ -1,0 +1,7 @@
+bin
+.git
+map
+webhook/.venv
+**/__pycache__
+keys
+frontend/node_modules
