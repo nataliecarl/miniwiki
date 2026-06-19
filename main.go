@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -56,6 +57,7 @@ var (
 	templates           *template.Template
 	cwd                 string
 	searchIndex         = &SearchIndex{}
+	wikiLinkRe          = regexp.MustCompile(`\[\[([^\[\]]+)\]\]`)
 	renderedBlockTagRe  = regexp.MustCompile(`(?i)</?(?:p|div|h[1-6]|li|ul|ol|blockquote|pre|code|br|tr|td|th)[^>]*>`)
 	renderedAnyTagRe    = regexp.MustCompile(`(?s)<[^>]+>`)
 	heavySnippetTableRe = regexp.MustCompile(`(?m)^\s*\|.*\|\s*$`)
@@ -164,9 +166,46 @@ type PageData struct {
 }
 
 func ParseMarkdown(document []byte) []byte {
+	document = []byte(expandWikiLinks(string(document)))
 	p := parser.NewWithExtensions(ParserFlags)
 	d := p.Parse(document)
 	return markdown.Render(d, htmlRenderer)
+}
+
+func expandWikiLinks(input string) string {
+	return wikiLinkRe.ReplaceAllStringFunc(input, func(match string) string {
+		parts := wikiLinkRe.FindStringSubmatch(match)
+		if len(parts) != 2 {
+			return match
+		}
+		raw := strings.TrimSpace(parts[1])
+		if raw == "" {
+			return match
+		}
+
+		target := raw
+		label := raw
+		if sep := strings.Index(raw, "|"); sep >= 0 {
+			target = strings.TrimSpace(raw[:sep])
+			label = strings.TrimSpace(raw[sep+1:])
+			if target == "" || label == "" {
+				return match
+			}
+		}
+
+		pathParts := strings.Split(target, "/")
+		encodedParts := make([]string, 0, len(pathParts))
+		for _, part := range pathParts {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				return match
+			}
+			encodedParts = append(encodedParts, url.PathEscape(trimmed))
+		}
+
+		wikiPath := "/wiki/" + strings.Join(encodedParts, "/")
+		return fmt.Sprintf("[%s](%s)", label, wikiPath)
+	})
 }
 
 func main() {
