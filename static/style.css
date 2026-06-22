@@ -252,6 +252,56 @@ blockquote {
     font-style: italic;
 }
 
+/* GitHub-style alerts (admonitions) */
+.markdown-alert {
+    border-left: 0.25rem solid var(--alert-color, var(--border-strong));
+    padding: 0.45rem 1rem;
+    margin: 1.2rem 0;
+}
+
+.markdown-alert > :first-child {
+    margin-top: 0;
+}
+
+.markdown-alert > :last-child {
+    margin-bottom: 0;
+}
+
+.markdown-alert-title {
+    display: flex;
+    align-items: center;
+    margin: 0 0 0.4rem;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--alert-color);
+}
+
+.markdown-alert-icon {
+    margin-right: 0.5rem;
+    fill: currentColor;
+    flex-shrink: 0;
+}
+
+.markdown-alert-note {
+    --alert-color: #0969da;
+}
+
+.markdown-alert-tip {
+    --alert-color: #1a7f37;
+}
+
+.markdown-alert-important {
+    --alert-color: #8250df;
+}
+
+.markdown-alert-warning {
+    --alert-color: #9a6700;
+}
+
+.markdown-alert-caution {
+    --alert-color: #cf222e;
+}
+
 img {
     max-width: 100%;
     height: auto;
