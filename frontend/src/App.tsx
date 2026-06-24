@@ -2,6 +2,7 @@ import { FormEvent, KeyboardEvent, useEffect, useMemo, useState } from "react";
 import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, HomeResponse, NavSection, SearchResponse, Suggestion, WikiResponse } from "./api";
 import logoUrl from "./3s-default-transparent.svg";
+import { SineDotsSpinner } from "./SineDotsSpinner";
 
 function useSearchQuery(): string {
   const location = useLocation();
@@ -160,7 +161,11 @@ function WikiPage() {
     return <p className="mw-muted">{error}</p>;
   }
   if (!data) {
-    return <p className="mw-muted">Loading...</p>;
+    return (
+      <p className="mw-muted">
+        <SineDotsSpinner />
+      </p>
+    );
   }
   if (data.mode === "directory") {
     return (
