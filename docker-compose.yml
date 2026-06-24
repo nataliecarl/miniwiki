@@ -14,6 +14,7 @@ services:
     volumes:
       - ./wiki:/app/wiki
       - ./keys:/app/keys:ro
+      - ./certs:/app/certs
     container_name: miniwiki
     ports:
       - "80:8080"
