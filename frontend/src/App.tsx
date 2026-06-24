@@ -1,6 +1,7 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useState } from "react";
 import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, HomeResponse, NavSection, SearchResponse, Suggestion, WikiResponse } from "./api";
+import logoUrl from "./3s-default-transparent.svg";
 
 function useSearchQuery(): string {
   const location = useLocation();
@@ -265,6 +266,7 @@ export default function App() {
       <header className="mw-header">
         <div className="mw-header-inner">
           <Link to="/" className="mw-brand">
+            <img src={logoUrl} alt="" className="mw-brand-logo" />
             MiniWiki
           </Link>
           <SearchBox initialValue={query} placeholder="Search pages..." autoFocusSelect={focusHeaderSearch} />
