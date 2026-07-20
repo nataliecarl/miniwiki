@@ -891,16 +891,13 @@ func HandleWikiAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleDownloadAPI serves a raw, co-located file from the wiki tree as an
-// attachment. Markdown files are served as rendered articles via /api/wiki, so
-// they are excluded here; everything else (PDFs, images, archives) downloads.
+// attachment. Any regular file under ./wiki qualifies, Markdown included — a
+// `[[file:notes.md]]` link hands out the source, while a plain `[[notes]]`
+// link still renders it as an article via /api/wiki.
 func HandleDownloadAPI(w http.ResponseWriter, r *http.Request) {
 	relPath, err := sanitizeWikiRelPath(r.URL.Query().Get("path"))
 	if err != nil || relPath == "" {
 		http.Error(w, "invalid path", http.StatusBadRequest)
-		return
-	}
-	if strings.HasSuffix(strings.ToLower(relPath), ".md") {
-		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	absPath := path.Join(cwd, "wiki", relPath)

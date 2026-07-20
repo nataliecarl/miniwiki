@@ -34,14 +34,14 @@ func TestHandleDownloadAPI(t *testing.T) {
 	}
 
 	cases := []struct {
-		name           string
-		path           string
-		wantStatus     int
-		wantBody       string
-		wantDisposition bool
+		name            string
+		path            string
+		wantStatus      int
+		wantBody        string
+		wantDisposition string
 	}{
-		{name: "serves attachment", path: "Server/r450.pdf", wantStatus: http.StatusOK, wantBody: string(want), wantDisposition: true},
-		{name: "rejects markdown", path: "Server/notes.md", wantStatus: http.StatusNotFound},
+		{name: "serves attachment", path: "Server/r450.pdf", wantStatus: http.StatusOK, wantBody: string(want), wantDisposition: `attachment; filename="r450.pdf"`},
+		{name: "serves markdown source", path: "Server/notes.md", wantStatus: http.StatusOK, wantBody: "# hi", wantDisposition: `attachment; filename="notes.md"`},
 		{name: "rejects traversal", path: "../main.go", wantStatus: http.StatusBadRequest},
 		{name: "rejects missing", path: "Server/nope.zip", wantStatus: http.StatusNotFound},
 		{name: "rejects directory", path: "Server", wantStatus: http.StatusNotFound},
@@ -60,9 +60,9 @@ func TestHandleDownloadAPI(t *testing.T) {
 			if tc.wantBody != "" && rec.Body.String() != tc.wantBody {
 				t.Errorf("body = %q, want %q", rec.Body.String(), tc.wantBody)
 			}
-			if tc.wantDisposition {
-				if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="r450.pdf"` {
-					t.Errorf("Content-Disposition = %q", got)
+			if tc.wantDisposition != "" {
+				if got := rec.Header().Get("Content-Disposition"); got != tc.wantDisposition {
+					t.Errorf("Content-Disposition = %q, want %q", got, tc.wantDisposition)
 				}
 			}
 		})
