@@ -1024,10 +1024,42 @@ func HandleWikiAPI(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleDownloadAPI serves a raw, co-located file from the wiki tree as an
-// attachment. Any regular file under ./wiki qualifies, Markdown included — a
-// `[[file:notes.md]]` link hands out the source, while a plain `[[notes]]`
-// link still renders it as an article via /api/wiki.
+// inlineContentTypes maps a lower-case file extension to the Content-Type that
+// makes a browser render it in place. It is deliberately an allowlist rather
+// than a blocklist: anything served inline from this origin runs in the wiki's
+// security context, so active formats (.html, .svg, .xhtml) stay off the list
+// and download instead. Everything absent from the map is an attachment.
+var inlineContentTypes = map[string]string{
+	".pdf":  "application/pdf",
+	".txt":  "text/plain; charset=utf-8",
+	".md":   "text/plain; charset=utf-8",
+	".log":  "text/plain; charset=utf-8",
+	".csv":  "text/plain; charset=utf-8",
+	".json": "text/plain; charset=utf-8",
+	".yaml": "text/plain; charset=utf-8",
+	".yml":  "text/plain; charset=utf-8",
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".avif": "image/avif",
+	".bmp":  "image/bmp",
+	".ico":  "image/x-icon",
+	".mp3":  "audio/mpeg",
+	".ogg":  "audio/ogg",
+	".wav":  "audio/wav",
+	".mp4":  "video/mp4",
+	".webm": "video/webm",
+}
+
+// HandleDownloadAPI serves a raw, co-located file from the wiki tree. Formats a
+// browser can display — PDFs, images, plain text, media — are sent inline so
+// the link opens as a preview and the browser's own save/download control takes
+// it from there; everything else is sent as an attachment. Any regular file
+// under ./wiki qualifies, Markdown included: a `[[file:notes.md]]` link shows
+// the source, while a plain `[[notes]]` link still renders it as an article via
+// /api/wiki.
 func HandleDownloadAPI(w http.ResponseWriter, r *http.Request) {
 	relPath, err := sanitizeWikiRelPath(r.URL.Query().Get("path"))
 	if err != nil || relPath == "" {
@@ -1040,7 +1072,17 @@ func HandleDownloadAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(relPath)))
+	disposition := "attachment"
+	if ctype, ok := inlineContentTypes[strings.ToLower(path.Ext(relPath))]; ok {
+		disposition = "inline"
+		// Set the type explicitly: ServeFile would otherwise sniff, and for
+		// .md it has no extension mapping at all.
+		w.Header().Set("Content-Type", ctype)
+	}
+	// The declared type is the one that matters — never let a browser sniff its
+	// way from an attachment into something it will execute.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, path.Base(relPath)))
 	http.ServeFile(w, r, absPath)
 }
 

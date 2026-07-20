@@ -32,6 +32,12 @@ func TestHandleDownloadAPI(t *testing.T) {
 	if err := os.WriteFile(path.Join(tmp, "wiki", "Server", "notes.md"), []byte("# hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(path.Join(tmp, "wiki", "Server", "backup.zip"), []byte("PK\x03\x04"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path.Join(tmp, "wiki", "Server", "page.html"), []byte("<h1>hi</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
 		name            string
@@ -39,9 +45,12 @@ func TestHandleDownloadAPI(t *testing.T) {
 		wantStatus      int
 		wantBody        string
 		wantDisposition string
+		wantType        string
 	}{
-		{name: "serves attachment", path: "Server/r450.pdf", wantStatus: http.StatusOK, wantBody: string(want), wantDisposition: `attachment; filename="r450.pdf"`},
-		{name: "serves markdown source", path: "Server/notes.md", wantStatus: http.StatusOK, wantBody: "# hi", wantDisposition: `attachment; filename="notes.md"`},
+		{name: "displays pdf inline", path: "Server/r450.pdf", wantStatus: http.StatusOK, wantBody: string(want), wantDisposition: `inline; filename="r450.pdf"`, wantType: "application/pdf"},
+		{name: "displays markdown source inline", path: "Server/notes.md", wantStatus: http.StatusOK, wantBody: "# hi", wantDisposition: `inline; filename="notes.md"`, wantType: "text/plain; charset=utf-8"},
+		{name: "downloads unknown type", path: "Server/backup.zip", wantStatus: http.StatusOK, wantDisposition: `attachment; filename="backup.zip"`},
+		{name: "downloads html rather than rendering it", path: "Server/page.html", wantStatus: http.StatusOK, wantDisposition: `attachment; filename="page.html"`},
 		{name: "rejects traversal", path: "../main.go", wantStatus: http.StatusBadRequest},
 		{name: "rejects missing", path: "Server/nope.zip", wantStatus: http.StatusNotFound},
 		{name: "rejects directory", path: "Server", wantStatus: http.StatusNotFound},
@@ -63,6 +72,11 @@ func TestHandleDownloadAPI(t *testing.T) {
 			if tc.wantDisposition != "" {
 				if got := rec.Header().Get("Content-Disposition"); got != tc.wantDisposition {
 					t.Errorf("Content-Disposition = %q, want %q", got, tc.wantDisposition)
+				}
+			}
+			if tc.wantType != "" {
+				if got := rec.Header().Get("Content-Type"); got != tc.wantType {
+					t.Errorf("Content-Type = %q, want %q", got, tc.wantType)
 				}
 			}
 		})
