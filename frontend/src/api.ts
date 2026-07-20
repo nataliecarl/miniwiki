@@ -26,6 +26,7 @@ export type WikiResponse = {
   content?: string;
   articles?: NavItem[];
   topics?: NavItem[];
+  files?: NavItem[];
   rel_path?: string;
 };
 

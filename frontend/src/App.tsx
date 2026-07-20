@@ -201,6 +201,20 @@ function WikiPage() {
             </ul>
           </section>
         )}
+        {!!data.files?.length && (
+          <section className="mw-card mw-directory-card">
+            <h2 className="mw-directory-heading">Files</h2>
+            <ul className="mw-directory-list">
+              {data.files.map((item) => (
+                <li key={item.link}>
+                  <a className="mw-directory-link" href={item.link} download>
+                    {item.title}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
       </div>
     );
   }

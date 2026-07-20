@@ -157,6 +157,7 @@ type APIWikiResponse struct {
 	Content     string              `json:"content,omitempty"`
 	Articles    []NavigationElement `json:"articles,omitempty"`
 	Topics      []NavigationElement `json:"topics,omitempty"`
+	Files       []NavigationElement `json:"files,omitempty"`
 	RelPath     string              `json:"rel_path,omitempty"`
 	UpdatedAt   string              `json:"updated_at,omitempty"`
 }
@@ -185,7 +186,14 @@ type PageData struct {
 }
 
 func ParseMarkdown(document []byte) []byte {
-	document = []byte(expandWikiLinks(string(document)))
+	return ParseMarkdownIn(document, "")
+}
+
+// ParseMarkdownIn renders Markdown as ParseMarkdown does, but resolves relative
+// `[[file:...]]` attachment links against baseDir (the directory of the article
+// being rendered, wiki-root-relative). Pass "" for root-level resolution.
+func ParseMarkdownIn(document []byte, baseDir string) []byte {
+	document = []byte(expandWikiLinks(string(document), baseDir))
 	p := parser.NewWithExtensions(ParserFlags)
 	d := p.Parse(document)
 	transformAlerts(d)
@@ -465,7 +473,18 @@ func wikiTitle(relPath string) string {
 	return path.Base(relPath)
 }
 
-func expandWikiLinks(input string) string {
+// cutFilePrefix reports whether s begins with a case-insensitive "file:"
+// scheme and returns the remainder. It lets `[[file:foo.pdf]]` route to the
+// download endpoint while leaving ordinary wiki targets untouched.
+func cutFilePrefix(s string) (string, bool) {
+	const prefix = "file:"
+	if len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix) {
+		return s[len(prefix):], true
+	}
+	return "", false
+}
+
+func expandWikiLinks(input string, baseDir string) string {
 	return wikiLinkRe.ReplaceAllStringFunc(input, func(match string) string {
 		parts := wikiLinkRe.FindStringSubmatch(match)
 		if len(parts) != 2 {
@@ -486,6 +505,34 @@ func expandWikiLinks(input string) string {
 				return match
 			}
 			explicitLabel = true
+		}
+
+		// `[[file:test.pdf]]` links to a co-located attachment served by
+		// /api/download, rather than to a rendered article. The path resolves
+		// relative to the current article's directory, so `Test/Site.md` reaches
+		// `Test/test.pdf`; a leading `/` (`[[file:/shared.pdf]]`) resolves from
+		// the wiki root instead. A bare form takes its label from the file name,
+		// an explicit `|Label` wins.
+		if rest, ok := cutFilePrefix(target); ok {
+			ref := strings.TrimSpace(rest)
+			if ref == "" {
+				return match
+			}
+			var filePath string
+			if strings.HasPrefix(ref, "/") {
+				filePath = path.Clean(strings.TrimPrefix(ref, "/"))
+			} else {
+				filePath = path.Clean(path.Join(baseDir, ref))
+			}
+			// A path that climbs out of the wiki root is a broken link; keep the
+			// raw text (the download handler would reject it anyway).
+			if filePath == "." || filePath == ".." || strings.HasPrefix(filePath, "../") {
+				return match
+			}
+			if !explicitLabel {
+				label = linkLabelEscaper.Replace(path.Base(filePath))
+			}
+			return fmt.Sprintf("[%s](/api/download?path=%s)", label, url.QueryEscape(filePath))
 		}
 
 		// `[[Target]]` shows the target's headline, so a link to a file named
@@ -523,6 +570,7 @@ func main() {
 	http.HandleFunc("/api/home", HandleHomeAPI)
 	http.HandleFunc("/api/wiki", HandleWikiAPI)
 	http.HandleFunc("/api/search", HandleSearchAPI)
+	http.HandleFunc("/api/download", HandleDownloadAPI)
 	http.HandleFunc("/api/search/suggest", HandleSearchSuggest)
 
 	// Keep legacy suggestion endpoint for backward compatibility.
@@ -708,18 +756,23 @@ func loadArticleByRelPath(relPath string) (string, string, error) {
 	}
 	title := wikiTitle(relPath)
 	md := applyDynamicVars(string(f))
-	rendered := string(ParseMarkdown([]byte(md)))
+	baseDir := path.Dir(relPath)
+	if baseDir == "." {
+		baseDir = ""
+	}
+	rendered := string(ParseMarkdownIn([]byte(md), baseDir))
 	return title, rendered, nil
 }
 
-func loadDirectoryByRelPath(relPath string) (string, []NavigationElement, []NavigationElement, error) {
+func loadDirectoryByRelPath(relPath string) (string, []NavigationElement, []NavigationElement, []NavigationElement, error) {
 	absPath := path.Join(cwd, "wiki", relPath)
 	d, err := os.ReadDir(absPath)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, nil, err
 	}
 	articles := make([]NavigationElement, 0)
 	topics := make([]NavigationElement, 0)
+	files := make([]NavigationElement, 0)
 	for _, el := range d {
 		if el.IsDir() {
 			topics = append(topics, NavigationElement{
@@ -729,6 +782,11 @@ func loadDirectoryByRelPath(relPath string) (string, []NavigationElement, []Navi
 			continue
 		}
 		if !strings.HasSuffix(el.Name(), ".md") {
+			// Non-Markdown files are co-located attachments; expose them as downloads.
+			files = append(files, NavigationElement{
+				Title: el.Name(),
+				Link:  "/api/download?path=" + url.QueryEscape(path.Join(relPath, el.Name())),
+			})
 			continue
 		}
 		name := strings.TrimSuffix(el.Name(), ".md")
@@ -739,8 +797,9 @@ func loadDirectoryByRelPath(relPath string) (string, []NavigationElement, []Navi
 	}
 	sort.Slice(articles, func(i, j int) bool { return articles[i].Title < articles[j].Title })
 	sort.Slice(topics, func(i, j int) bool { return topics[i].Title < topics[j].Title })
+	sort.Slice(files, func(i, j int) bool { return files[i].Title < files[j].Title })
 	title := path.Base(relPath)
-	return title, articles, topics, nil
+	return title, articles, topics, files, nil
 }
 
 func convertNavigation(nav map[NavigationElement][]NavigationElement) []APINavigationSection {
@@ -800,7 +859,7 @@ func HandleWikiAPI(w http.ResponseWriter, r *http.Request) {
 	absPath := path.Join(cwd, "wiki", relPath)
 	fi, statErr := os.Stat(absPath)
 	if statErr == nil && fi.IsDir() {
-		title, articles, topics, dirErr := loadDirectoryByRelPath(relPath)
+		title, articles, topics, files, dirErr := loadDirectoryByRelPath(relPath)
 		if dirErr != nil {
 			http.Error(w, dirErr.Error(), http.StatusInternalServerError)
 			return
@@ -812,6 +871,7 @@ func HandleWikiAPI(w http.ResponseWriter, r *http.Request) {
 			RelPath:  relPath,
 			Articles: articles,
 			Topics:   topics,
+			Files:    files,
 		})
 		return
 	}
@@ -828,6 +888,29 @@ func HandleWikiAPI(w http.ResponseWriter, r *http.Request) {
 		Content:     content,
 		ContentHTML: content,
 	})
+}
+
+// HandleDownloadAPI serves a raw, co-located file from the wiki tree as an
+// attachment. Markdown files are served as rendered articles via /api/wiki, so
+// they are excluded here; everything else (PDFs, images, archives) downloads.
+func HandleDownloadAPI(w http.ResponseWriter, r *http.Request) {
+	relPath, err := sanitizeWikiRelPath(r.URL.Query().Get("path"))
+	if err != nil || relPath == "" {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	if strings.HasSuffix(strings.ToLower(relPath), ".md") {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	absPath := path.Join(cwd, "wiki", relPath)
+	fi, statErr := os.Stat(absPath)
+	if statErr != nil || fi.IsDir() {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(relPath)))
+	http.ServeFile(w, r, absPath)
 }
 
 func HandleSearchAPI(w http.ResponseWriter, r *http.Request) {
