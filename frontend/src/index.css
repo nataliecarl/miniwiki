@@ -264,6 +264,9 @@ body {
   display: block;
   color: var(--muted-foreground);
   font-size: 0.83rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mw-home-search .mw-search-input {

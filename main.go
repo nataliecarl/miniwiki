@@ -61,6 +61,8 @@ var (
 	cwd                 string
 	searchIndex         = &SearchIndex{}
 	wikiLinkRe          = regexp.MustCompile(`\[\[([^\[\]]+)\]\]`)
+	atxHeadlineRe       = regexp.MustCompile(`^#[ \t]+(.*?)[ \t]*#*[ \t]*$`)
+	linkLabelEscaper    = strings.NewReplacer("[", `\[`, "]", `\]`)
 	renderedBlockTagRe  = regexp.MustCompile(`(?i)</?(?:p|div|h[1-6]|li|ul|ol|blockquote|pre|code|br|tr|td|th)[^>]*>`)
 	renderedAnyTagRe    = regexp.MustCompile(`(?s)<[^>]+>`)
 	heavySnippetTableRe = regexp.MustCompile(`(?m)^\s*\|.*\|\s*$`)
@@ -85,6 +87,18 @@ type NavigationElement struct {
 	Title string `json:"title"`
 	Link  string `json:"link"`
 }
+
+type titleCacheEntry struct {
+	headline string
+	found    bool
+	modTime  time.Time
+	size     int64
+}
+
+var titleCache = struct {
+	mu      sync.Mutex
+	entries map[string]titleCacheEntry
+}{entries: make(map[string]titleCacheEntry)}
 
 type DirectoryStructure struct {
 	Subdirectories []NavigationElement
@@ -116,6 +130,7 @@ type SearchSuggestion struct {
 	Link         string `json:"link"`
 	Path         string `json:"path"`
 	Category     string `json:"category"`
+	Context      string `json:"context,omitempty"`
 	MatchPreview string `json:"match_preview,omitempty"`
 }
 
@@ -372,6 +387,84 @@ func renderAlert(w io.Writer, node ast.Node, entering bool) (ast.WalkStatus, boo
 	return ast.GoToNext, true
 }
 
+// headlineFromMarkdown returns the text of the document's first level-1 ATX
+// heading ("# Headline"). Fenced code is skipped, since shell comments inside a
+// fence look exactly like a heading. The result is raw: callers apply
+// applyDynamicVars themselves so a cached headline can't freeze `{-{year}-}`.
+func headlineFromMarkdown(content string) (string, bool) {
+	fence := ""
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if fence != "" {
+			if strings.HasPrefix(trimmed, fence) {
+				fence = ""
+			}
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "```"):
+			fence = "```"
+			continue
+		case strings.HasPrefix(trimmed, "~~~"):
+			fence = "~~~"
+			continue
+		}
+		match := atxHeadlineRe.FindStringSubmatch(trimmed)
+		if match == nil {
+			continue
+		}
+		if headline := strings.TrimSpace(match[1]); headline != "" {
+			return headline, true
+		}
+	}
+	return "", false
+}
+
+// wikiArticleTitle resolves the display title for the Markdown file at relPath
+// (no ".md" suffix): its first level-1 heading, falling back to its filename
+// when it has none. exists reports whether the file is there at all, which lets
+// callers tell "untitled article" apart from "no such article".
+//
+// Results are memoised per file and invalidated on mtime/size change: a single
+// navigation or article render resolves titles for many paths, and without the
+// cache each one would re-read the file from disk. The cache is deliberately
+// independent of SearchIndex — this runs inside ParseMarkdown via
+// expandWikiLinks, which itself runs while search rendering reads the index.
+func wikiArticleTitle(relPath string) (string, bool) {
+	absPath := path.Join(cwd, "wiki", relPath+".md")
+	info, err := os.Stat(absPath)
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	titleCache.mu.Lock()
+	entry, hit := titleCache.entries[relPath]
+	titleCache.mu.Unlock()
+	if !hit || !entry.modTime.Equal(info.ModTime()) || entry.size != info.Size() {
+		body, readErr := os.ReadFile(absPath)
+		if readErr != nil {
+			return "", false
+		}
+		headline, found := headlineFromMarkdown(string(body))
+		entry = titleCacheEntry{headline: headline, found: found, modTime: info.ModTime(), size: info.Size()}
+		titleCache.mu.Lock()
+		titleCache.entries[relPath] = entry
+		titleCache.mu.Unlock()
+	}
+	if !entry.found {
+		return path.Base(relPath), true
+	}
+	return applyDynamicVars(entry.headline), true
+}
+
+// wikiTitle is wikiArticleTitle for callers that already know the file exists,
+// such as navigation built from a directory listing.
+func wikiTitle(relPath string) string {
+	if title, ok := wikiArticleTitle(relPath); ok {
+		return title
+	}
+	return path.Base(relPath)
+}
+
 func expandWikiLinks(input string) string {
 	return wikiLinkRe.ReplaceAllStringFunc(input, func(match string) string {
 		parts := wikiLinkRe.FindStringSubmatch(match)
@@ -385,11 +478,24 @@ func expandWikiLinks(input string) string {
 
 		target := raw
 		label := raw
+		explicitLabel := false
 		if sep := strings.Index(raw, "|"); sep >= 0 {
 			target = strings.TrimSpace(raw[:sep])
 			label = strings.TrimSpace(raw[sep+1:])
 			if target == "" || label == "" {
 				return match
+			}
+			explicitLabel = true
+		}
+
+		// `[[Target]]` shows the target's headline, so a link to a file named
+		// "Hans und Peter" reads as "Dell PowerEdge R450 Servers". An explicit
+		// `|Label` always wins. A target that resolves to no file — a broken
+		// link, or a directory — keeps its raw text, which stays readable as
+		// "Papers/Drafts" where a bare "Drafts" would lose the trail.
+		if !explicitLabel {
+			if title, ok := wikiArticleTitle(target); ok {
+				label = linkLabelEscaper.Replace(title)
 			}
 		}
 
@@ -563,12 +669,12 @@ func listRootWikiEntries() ([]NavigationElement, []NavigationElement, error) {
 			continue
 		}
 		if strings.HasSuffix(title, ".md") {
-			title = title[:len(title)-3]
+			title = strings.TrimSuffix(title, ".md")
 			if strings.EqualFold(title, "README") {
 				continue
 			}
 			articles = append(articles, NavigationElement{
-				Title: title,
+				Title: wikiTitle(title),
 				Link:  fmt.Sprintf("/wiki/%s", title),
 			})
 		}
@@ -600,7 +706,7 @@ func loadArticleByRelPath(relPath string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	title := path.Base(relPath)
+	title := wikiTitle(relPath)
 	md := applyDynamicVars(string(f))
 	rendered := string(ParseMarkdown([]byte(md)))
 	return title, rendered, nil
@@ -627,7 +733,7 @@ func loadDirectoryByRelPath(relPath string) (string, []NavigationElement, []Navi
 		}
 		name := strings.TrimSuffix(el.Name(), ".md")
 		articles = append(articles, NavigationElement{
-			Title: name,
+			Title: wikiTitle(path.Join(relPath, name)),
 			Link:  path.Join("/", "wiki", relPath, name),
 		})
 	}
@@ -902,8 +1008,11 @@ func collectMarkdownDocs(root string) ([]SearchDoc, time.Time, error) {
 		if relPath == "" {
 			return nil
 		}
-		title := strings.TrimSuffix(path.Base(relPath), ".md")
 		content := string(body)
+		title := path.Base(relPath)
+		if headline, ok := headlineFromMarkdown(content); ok {
+			title = applyDynamicVars(headline)
+		}
 		docs = append(docs, SearchDoc{
 			Title:             title,
 			Link:              link,
@@ -1250,6 +1359,7 @@ func suggestDocs(query string, limit int) []SearchSuggestion {
 				Link:     doc.Link,
 				Path:     doc.Path,
 				Category: suggestionCategory(doc.Path),
+				Context:  suggestionContext(doc.Path),
 			},
 			score: score,
 		})
@@ -1268,6 +1378,18 @@ func suggestDocs(query string, limit int) []SearchSuggestion {
 		out = append(out, match.SearchSuggestion)
 	}
 	return out
+}
+
+// suggestionContext renders the folders a doc lives in as a breadcrumb, e.g.
+// "Papers / Reviews". A title alone is often ambiguous — several folders can
+// hold a "Presentations" — and the containing folders are what say which one
+// this is. Empty for root-level files, which have no folders to disambiguate.
+func suggestionContext(docPath string) string {
+	dir := path.Dir(strings.TrimSpace(docPath))
+	if dir == "." || dir == "/" || dir == "" {
+		return ""
+	}
+	return strings.Join(strings.Split(dir, "/"), " / ")
 }
 
 func suggestionCategory(docPath string) string {
@@ -1502,17 +1624,24 @@ func GenerateSidebarContents() (map[NavigationElement][]NavigationElement, error
 			}
 			for _, de := range subdir {
 				deTitle := de.Name()
+				display := deTitle
 				if !de.IsDir() {
-					if deTitle[len(deTitle)-3:] != ".md" {
+					if !strings.HasSuffix(deTitle, ".md") {
 						continue
 					}
-					deTitle = deTitle[:len(deTitle)-3] // remove file extension
+					deTitle = strings.TrimSuffix(deTitle, ".md")
+					display = wikiTitle(path.Join(title, deTitle))
 				}
 				result[e] = append(result[e], NavigationElement{
-					Title: deTitle,
+					Title: display,
 					Link:  fmt.Sprintf("/wiki/%s/%s", title, deTitle),
 				})
 			}
+			// Sort by title: os.ReadDir orders by filename, which no longer
+			// matches what the sidebar displays now that titles come from
+			// headlines.
+			items := result[e]
+			sort.Slice(items, func(i, j int) bool { return items[i].Title < items[j].Title })
 		} else {
 			if !strings.HasSuffix(title, ".md") {
 				continue

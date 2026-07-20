@@ -112,7 +112,7 @@ function SearchBox({
                 setOpen(false);
               }}>
               <span className="mw-suggest-title">{suggestion.title}</span>
-              <span className="mw-suggest-meta">{suggestion.category}</span>
+              <span className="mw-suggest-meta">{suggestion.context || suggestion.category}</span>
             </a>
           ))}
         </div>

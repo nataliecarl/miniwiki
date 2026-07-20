@@ -50,6 +50,7 @@ export type Suggestion = {
   link: string;
   path: string;
   category: string;
+  context?: string;
 };
 
 async function fetchJson<T>(url: string): Promise<T> {
