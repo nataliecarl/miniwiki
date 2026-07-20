@@ -484,7 +484,141 @@ func cutFilePrefix(s string) (string, bool) {
 	return "", false
 }
 
+// applyOutsideCode runs fn over every stretch of text that Markdown will not
+// render as code, leaving fenced blocks (``` / ~~~) and inline code spans
+// (`x`, ``x``) byte-for-byte intact. Both the `{-{var}-}` substitution and
+// `[[wiki link]]` expansion happen on raw text before the parser runs, so
+// without this an article documenting the syntax would rewrite its own
+// examples.
+//
+// fn must not add or remove newlines; it is called per line-chunk and the
+// result is re-split on "\n".
+func applyOutsideCode(s string, fn func(string) string) string {
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	chunk := make([]string, 0, len(lines))
+	openFence := ""
+
+	flush := func() {
+		if len(chunk) == 0 {
+			return
+		}
+		out = append(out, strings.Split(fn(strings.Join(chunk, "\n")), "\n")...)
+		chunk = chunk[:0]
+	}
+
+	for _, line := range lines {
+		if openFence != "" {
+			out = append(out, line)
+			if closesFence(line, openFence) {
+				openFence = ""
+			}
+			continue
+		}
+		if marker, ok := openingFence(line); ok {
+			flush()
+			out = append(out, line)
+			openFence = marker
+			continue
+		}
+		chunk = append(chunk, line)
+	}
+	flush()
+	return strings.Join(out, "\n")
+}
+
+// openingFence reports whether line opens a fenced code block and returns the
+// fence marker itself (the run of backticks or tildes, without the info string).
+func openingFence(line string) (string, bool) {
+	trimmed := strings.TrimLeft(line, " ")
+	if len(line)-len(trimmed) > 3 {
+		return "", false
+	}
+	if !strings.HasPrefix(trimmed, "```") && !strings.HasPrefix(trimmed, "~~~") {
+		return "", false
+	}
+	c := trimmed[0]
+	n := 0
+	for n < len(trimmed) && trimmed[n] == c {
+		n++
+	}
+	// A backtick fence's info string may not contain backticks, else it is a
+	// paragraph holding an inline code span rather than a fence.
+	if c == '`' && strings.ContainsRune(trimmed[n:], '`') {
+		return "", false
+	}
+	return trimmed[:n], true
+}
+
+// closesFence reports whether line closes a block opened by marker: the same
+// character, at least as long, and nothing else on the line.
+func closesFence(line, marker string) bool {
+	trimmed := strings.TrimLeft(line, " ")
+	if len(line)-len(trimmed) > 3 {
+		return false
+	}
+	c := marker[0]
+	n := 0
+	for n < len(trimmed) && trimmed[n] == c {
+		n++
+	}
+	return n >= len(marker) && strings.TrimSpace(trimmed[n:]) == ""
+}
+
+// applyOutsideInlineCode runs fn over the parts of s that fall outside inline
+// code spans. A backtick run with no matching closing run of the same length is
+// literal text, not a span opener.
+func applyOutsideInlineCode(s string, fn func(string) string) string {
+	var b strings.Builder
+	last := 0
+	for i := 0; i < len(s); {
+		if s[i] != '`' {
+			i++
+			continue
+		}
+		start := i
+		for i < len(s) && s[i] == '`' {
+			i++
+		}
+		runLen := i - start
+
+		closeEnd := -1
+		for j := i; j < len(s); {
+			if s[j] != '`' {
+				j++
+				continue
+			}
+			k := j
+			for k < len(s) && s[k] == '`' {
+				k++
+			}
+			if k-j == runLen {
+				closeEnd = k
+				break
+			}
+			j = k
+		}
+		if closeEnd < 0 {
+			continue // unterminated run: ordinary text
+		}
+
+		b.WriteString(fn(s[last:start]))
+		b.WriteString(s[start:closeEnd])
+		last, i = closeEnd, closeEnd
+	}
+	b.WriteString(fn(s[last:]))
+	return b.String()
+}
+
 func expandWikiLinks(input string, baseDir string) string {
+	return applyOutsideCode(input, func(text string) string {
+		return applyOutsideInlineCode(text, func(plain string) string {
+			return expandWikiLinksText(plain, baseDir)
+		})
+	})
+}
+
+func expandWikiLinksText(input string, baseDir string) string {
 	return wikiLinkRe.ReplaceAllStringFunc(input, func(match string) string {
 		parts := wikiLinkRe.FindStringSubmatch(match)
 		if len(parts) != 2 {
@@ -1532,6 +1666,12 @@ func HandleSearchSuggest(w http.ResponseWriter, r *http.Request) {
 }
 
 func applyDynamicVars(s string) string {
+	return applyOutsideCode(s, func(text string) string {
+		return applyOutsideInlineCode(text, applyDynamicVarsText)
+	})
+}
+
+func applyDynamicVarsText(s string) string {
 	now := time.Now()
 	s = staticVars(s)
 	relativeYear := func(monthStr string) int {
