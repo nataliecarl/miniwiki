@@ -10,5 +10,27 @@ When using docker to deploy Miniwiki, some steps are required for the repo to wo
 4. Put a `SECRET` in `./webhook/.env` so that the environment variable `WEBHOOK_SECRET` is set - please don't use our preset value
 5. The `SECRET` you put in your `.env` file can now be used to configure a webhook from you repository (e.g. github.com). The webhook service listens on port 9000 and expects webhook requests to target the `/github` endpoint. As Content-Type please select `application/json`. Miniwiki now starts with HTTPS by default and auto-generates a self-signed certificate in `./certs/` when no cert is present.
 
+### Nextcloud two-way sync (optional)
+The webhook container can keep a folder of the wiki in two-way sync with a Nextcloud share link.
+Edits made in Nextcloud are committed and pushed to the wiki repo; edits that reach the repo are uploaded to Nextcloud.
+
+What gets synced:
+- `.md` files, anywhere.
+- **Data folders**: every file of any type inside a folder named `data`, at any depth. Use them for attachments (PDFs, images, archives) and link to them from the article next to the folder with `[[file:data/<name>]]`, e.g. `Server/data/r450.pdf` from `Server/Hans und Peter.md`. A leading `/` resolves from the wiki root: `[[file:/data/<name>]]`.
+- Nothing else. Other files, and hidden files or folders (`.name`), are left alone on both sides.
+
+Data files are committed to git like articles, so keep them small: GitHub rejects files over 100 MB.
+1. In Nextcloud, share a folder by public link with **edit** permission ("Allow upload and editing").
+2. Give the deploy key from step 3 above **write access**, since the sync pushes commits.
+3. Add to `./webhook/.env`:
+   - `NEXTCLOUD_SHARE_URL=https://cloud.example.com/s/<token>` (required, enables the sync)
+   - `NEXTCLOUD_SHARE_PASSWORD=...` if the link is password protected
+   - `NEXTCLOUD_LOCAL_DIR=Nextcloud` — the folder inside the wiki repo that mirrors the share (default: the whole wiki)
+   - `NEXTCLOUD_SYNC_INTERVAL=60` — seconds between polls of Nextcloud (a GitHub webhook triggers a sync immediately)
+   - `WIKI_BRANCH=master` — the wiki branch to commit to
+4. Sync state lives in `./state/`. Delete it to start over. With no state, files that differ on both sides are treated as conflicts.
+
+If a file was changed on both sides, the repo version wins. The Nextcloud version is saved next to it as `<name> (conflict <timestamp>).<ext>`.
+
 # More Moar Mooaaaaaaaaaaaaarrr
 Moar documentation coming to a repo near you soon! 
