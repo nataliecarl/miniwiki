@@ -843,6 +843,9 @@ func listRootWikiEntries() ([]NavigationElement, []NavigationElement, error) {
 	articles := make([]NavigationElement, 0)
 	for _, x := range wikiContent {
 		title := x.Name()
+		if isHiddenWikiEntry(title) {
+			continue
+		}
 		if x.IsDir() {
 			categories = append(categories, NavigationElement{
 				Title: title,
@@ -866,6 +869,13 @@ func listRootWikiEntries() ([]NavigationElement, []NavigationElement, error) {
 	return categories, articles, nil
 }
 
+// isHiddenWikiEntry reports whether a file or directory name is hidden
+// (dot-prefixed, e.g. .git). Hidden entries are not part of the wiki: they are
+// left out of navigation, listings and search, and cannot be requested.
+func isHiddenWikiEntry(name string) bool {
+	return strings.HasPrefix(name, ".")
+}
+
 func sanitizeWikiRelPath(raw string) (string, error) {
 	trimmed := strings.TrimSpace(strings.TrimPrefix(raw, "/"))
 	if trimmed == "" {
@@ -877,6 +887,11 @@ func sanitizeWikiRelPath(raw string) (string, error) {
 	}
 	if clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", errors.New("invalid wiki path")
+	}
+	for _, segment := range strings.Split(clean, "/") {
+		if isHiddenWikiEntry(segment) {
+			return "", errors.New("invalid wiki path")
+		}
 	}
 	return clean, nil
 }
@@ -908,6 +923,9 @@ func loadDirectoryByRelPath(relPath string) (string, []NavigationElement, []Navi
 	topics := make([]NavigationElement, 0)
 	files := make([]NavigationElement, 0)
 	for _, el := range d {
+		if isHiddenWikiEntry(el.Name()) {
+			continue
+		}
 		if el.IsDir() {
 			topics = append(topics, NavigationElement{
 				Title: el.Name(),
@@ -1127,6 +1145,9 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 	articles := make([]NavigationElement, 0)
 	for _, x := range wikiContent {
 		title := x.Name()
+		if isHiddenWikiEntry(title) {
+			continue
+		}
 		if x.IsDir() {
 			categories = append(categories, NavigationElement{
 				Title: title,
@@ -1221,6 +1242,12 @@ func latestWikiMarkdownModTime(root string) (time.Time, error) {
 		if err != nil {
 			return err
 		}
+		if p != root && isHiddenWikiEntry(d.Name()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
 			return nil
 		}
@@ -1245,6 +1272,12 @@ func collectMarkdownDocs(root string) ([]SearchDoc, time.Time, error) {
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if p != root && isHiddenWikiEntry(d.Name()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
 			return nil
@@ -1872,6 +1905,9 @@ func GenerateSidebarContents() (map[NavigationElement][]NavigationElement, error
 	}
 	for _, dirEntry := range d {
 		title := dirEntry.Name()
+		if isHiddenWikiEntry(title) {
+			continue
+		}
 		link := fmt.Sprintf("/wiki/%s", title)
 		if dirEntry.IsDir() {
 			e := NavigationElement{
@@ -1886,6 +1922,9 @@ func GenerateSidebarContents() (map[NavigationElement][]NavigationElement, error
 			}
 			for _, de := range subdir {
 				deTitle := de.Name()
+				if isHiddenWikiEntry(deTitle) {
+					continue
+				}
 				display := deTitle
 				if !de.IsDir() {
 					if !strings.HasSuffix(deTitle, ".md") {

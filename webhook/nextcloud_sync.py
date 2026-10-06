@@ -12,6 +12,12 @@ change is propagated in whichever direction it happened. When both sides changed
 file differently, the repo version wins and the Nextcloud version is kept next to it as
 `<name> (conflict <timestamp>).<ext>`, which then syncs like any other new file.
 
+The repo is the source of truth; Nextcloud is one more way to contribute to it. Only what
+is committed (HEAD) is synced, so the working tree is settled first (see
+_settle_working_tree). Every change from Nextcloud becomes a timestamped commit listing the
+touched files, so a deletion there is a commit that can be reverted. A file is only deleted
+in Nextcloud once its deletion is committed in the repo.
+
 Change detection is hash based, so an idle cycle is one WebDAV request plus a few git calls:
 - Content is identified by its git blob hash. Local hashes come from `git ls-tree` without
   reading files; only paths that `git status` reports as changed are hashed from disk.
@@ -183,20 +189,34 @@ class Syncer:
         return result.stdout
 
     def pull(self) -> None:
-        """Bring the repo up to date on its branch (not a detached HEAD, so we can commit)."""
+        """Bring the repo up to date on its branch (not a detached HEAD, so we can commit).
+
+        Our unpushed sync commits are merged with the repo, whose side wins any conflicting
+        lines; the Nextcloud edit stays in history as the merge's other parent. If git still
+        can't merge (e.g. edited here, deleted there), our commits are kept on a local
+        `nextcloud-sync/conflict-<timestamp>` branch and the repo's version is taken as is.
+        """
+        upstream = f"origin/{self.branch}"
         self.git("fetch", "origin", self.branch)
         current = self.git("rev-parse", "--abbrev-ref", "HEAD").strip()
         if current != self.branch:
-            self.git("checkout", "-B", self.branch, f"origin/{self.branch}")
-        else:
-            self.git("rebase", "--autostash", f"origin/{self.branch}")
-
-    def commit_and_push(self, paths: list[str]) -> None:
-        self.git("add", "-A", "--", *[self._repo_path(p) for p in paths])
-        if not self.git("diff", "--cached", "--name-only"):
+            self.git("checkout", "-B", self.branch, upstream)
             return
-        self.git("commit", "-m", f"Sync {len(paths)} file(s) from Nextcloud")
+        try:
+            self.git("merge", "--no-edit", "-X", "theirs", upstream)
+        except RuntimeError:
+            self.git("merge", "--abort", check=False)
+            backup = "nextcloud-sync/conflict-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+            self.git("branch", backup)
+            log.warning("could not merge %s, local commits kept on branch %s", upstream, backup)
+            self.git("reset", "--keep", upstream)
+
+    def push(self) -> None:
+        """Push our sync commits, if any; retried after a pull when the repo moved on."""
         for attempt in range(3):
+            ahead = self.git("rev-list", "--count", f"origin/{self.branch}..HEAD").strip()
+            if ahead == "0":
+                return
             try:
                 self.git("push", "origin", f"HEAD:{self.branch}")
                 return
@@ -204,6 +224,15 @@ class Syncer:
                 if attempt == 2:
                     raise
                 self.pull()
+
+    def commit(self, paths: list[str], title: str = "Nextcloud sync") -> None:
+        """Commit paths (relative to the sync folder), stamped and listing what changed."""
+        self.git("add", "-A", "--", *[self._repo_path(p) for p in paths])
+        if not self.git("diff", "--cached", "--name-only"):
+            return
+        stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        summary = self.git("diff", "--cached", "--name-status", "--no-renames")
+        self.git("commit", "-m", f"{title} {stamp}", "-m", summary)
 
     def _repo_path(self, rel: str) -> str:
         return f"{self.local_dir}/{rel}" if self.local_dir else rel
@@ -214,14 +243,39 @@ class Syncer:
         return self.git("rev-parse", "--verify", "--quiet", spec, check=False).strip()
 
     def _local_dirty(self) -> list[str]:
-        """Paths (relative to the sync folder) whose working copy differs from HEAD."""
+        """Synced paths (relative to the sync folder) whose working copy differs from HEAD."""
         out = self.git("status", "--porcelain", "-z", "--no-renames", "--untracked-files=all",
                        "--", self.local_dir or ".")
         prefix = self.local_dir + "/" if self.local_dir else ""
-        return [entry[3:].removeprefix(prefix) for entry in out.split("\0") if entry]
+        paths = [entry[3:].removeprefix(prefix) for entry in out.split("\0") if entry]
+        return [p for p in paths if is_synced_path(p)]
 
-    def _local_files(self, dirty: list[str]) -> dict[str, str]:
-        """Return {path: blob hash}, from git's index of HEAD plus any dirty files on disk."""
+    def _settle_working_tree(self) -> None:
+        """Make the sync folder's synced files match HEAD again, without losing anything.
+
+        Only HEAD is synced to Nextcloud. Changes the syncer itself made but did not get to
+        commit (the cycle failed in between) are committed now. Anything else was edited
+        on the server by hand; it is stashed (see `git stash list`) rather than synced.
+        """
+        known = self.state["files"]
+        ours, stray = [], []
+        for rel in self._local_dirty():
+            path = os.path.join(self.root, rel)
+            if os.path.isfile(path):
+                mine = rel in known and blob_sha(self._read_local(rel)) == known[rel]["sha"]
+            else:
+                mine = rel not in known
+            (ours if mine else stray).append(rel)
+        if ours:
+            self.commit(ours)
+        if stray:
+            log.warning("stashing manual edits in the sync folder: %s", ", ".join(stray))
+            self.git("stash", "push", "--include-untracked", "-m",
+                     "Manual edits set aside by Nextcloud sync", "--",
+                     *[self._repo_path(p) for p in stray])
+
+    def _local_files(self) -> dict[str, str]:
+        """Return {path: blob hash} of the synced files in HEAD, read from git's index."""
         files: dict[str, str] = {}
         prefix = self.local_dir + "/" if self.local_dir else ""
         out = self.git("ls-tree", "-r", "-z", "HEAD", "--", self.local_dir or ".")
@@ -232,11 +286,11 @@ class Syncer:
             rel = path.removeprefix(prefix)
             if meta.split()[1] == "blob" and is_synced_path(rel):
                 files[rel] = meta.split()[2]
-        for rel in dirty:
-            files.pop(rel, None)
-            if is_synced_path(rel) and os.path.isfile(os.path.join(self.root, rel)):
-                files[rel] = blob_sha(self._read_local(rel))
         return files
+
+    def _deletion_committed(self, rel: str) -> bool:
+        """Whether rel (absent from HEAD) is in HEAD's history, so git can bring it back."""
+        return bool(self.git("rev-list", "-1", "HEAD", "--", self._repo_path(rel)).strip())
 
     # --- state -------------------------------------------------------------------------
 
@@ -281,13 +335,13 @@ class Syncer:
 
     def run_once(self) -> None:
         with self.lock:
+            self._settle_working_tree()
             self.pull()
+            self.push()
             root_etag = self.share.etag("")
             if root_etag is None:
                 raise RuntimeError("Nextcloud share not found (wrong link or password?)")
-            tree = self._local_tree()
-            dirty = self._local_dirty()
-            if (not dirty and tree == self.state["tree"]
+            if (self._local_tree() == self.state["tree"]
                     and root_etag == self.state["root_etag"]):
                 return  # nothing changed on either side
 
@@ -295,9 +349,10 @@ class Syncer:
                 self.state["dirs"], {f: s["etag"] for f, s in self.state["files"].items()})
             failed = False
             try:
-                changed_locally, failed = self._reconcile(self._local_files(dirty), remote)
+                changed_locally, failed = self._reconcile(self._local_files(), remote)
                 if changed_locally:
-                    self.commit_and_push(changed_locally)
+                    self.commit(changed_locally)
+                    self.push()
                 # Etags seen before our own uploads: those uploads make the next cycle list
                 # the touched folders once more, then it settles. After a failure, force a
                 # full comparison next time so the failed file is retried.
@@ -307,12 +362,15 @@ class Syncer:
             finally:
                 self._save_state()
 
-    def _reconcile(self, local: dict[str, str], remote: dict[str, str]) -> tuple[list[str], bool]:
+    def _reconcile(self, local: dict[str, str], remote: dict[str, str]
+                   ) -> tuple[list[str], bool]:
         known = self.state["files"]
         changed_locally: list[str] = []
         failed = False
 
         for rel in sorted(set(local) | set(remote) | set(known)):
+            if not is_synced_path(rel):
+                continue  # never touch anything else, whatever the inputs say
             base = known.get(rel)
             base_sha = base["sha"] if base else None
             local_sha = local.get(rel)
@@ -331,6 +389,17 @@ class Syncer:
 
                 if local_sha == remote_sha:
                     synced = (local_sha, remote_etag)  # in sync (or gone on both sides)
+                elif (remote_sha == base_sha and local_sha is None
+                      and not self._deletion_committed(rel)):
+                    # Not in the repo, but never deleted there either (e.g. a stale state
+                    # file or a changed NEXTCLOUD_LOCAL_DIR): bring it back, don't delete.
+                    log.warning("not deleting remote %s, the repo never had it; "
+                                "adding it to the repo instead", rel)
+                    if remote_data is None:
+                        remote_data = self.share.download(rel)
+                    self._write_local(rel, remote_data)
+                    changed_locally.append(rel)
+                    synced = (remote_sha, remote_etag)
                 elif local_sha == base_sha or local_sha is None and remote_sha != base_sha:
                     # Only Nextcloud changed, or it was edited there and deleted in the repo
                     # (the edit wins) -> apply to the repo.
