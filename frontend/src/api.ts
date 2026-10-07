@@ -1,6 +1,10 @@
+// "pdf" marks a PDF document, which opens in the PDF viewer.
+export type ItemKind = "pdf";
+
 export type NavItem = {
   title: string;
   link: string;
+  kind?: ItemKind;
 };
 
 export type NavSection = {
@@ -20,7 +24,7 @@ export type HomeResponse = {
 };
 
 export type WikiResponse = {
-  mode: "article" | "directory";
+  mode: "article" | "directory" | "pdf";
   title: string;
   content_html?: string;
   content?: string;
@@ -28,6 +32,7 @@ export type WikiResponse = {
   topics?: NavItem[];
   files?: NavItem[];
   rel_path?: string;
+  file_url?: string;
 };
 
 export type SearchResult = {
@@ -37,6 +42,7 @@ export type SearchResult = {
   rendered_snippet?: string;
   plain_snippet?: string;
   highlighted_plain?: string;
+  kind?: ItemKind;
 };
 
 export type SearchResponse = {
@@ -52,6 +58,7 @@ export type Suggestion = {
   path: string;
   category: string;
   context?: string;
+  kind?: ItemKind;
 };
 
 async function fetchJson<T>(url: string): Promise<T> {

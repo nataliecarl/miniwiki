@@ -21,7 +21,8 @@ RUN npm run build
 
 FROM alpine:latest
 
-RUN apk add --no-cache fontconfig font-linux-libertine
+# poppler-utils provides pdftotext, which makes PDF text searchable.
+RUN apk add --no-cache fontconfig font-linux-libertine poppler-utils
 
 WORKDIR /app
 

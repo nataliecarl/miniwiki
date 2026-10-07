@@ -526,6 +526,77 @@ body {
   color: var(--muted-foreground);
 }
 
+/* PDFs: the icon marks every link that opens one, and the viewer page embeds it. */
+.mw-pdf-icon {
+  display: inline-block;
+  flex: none;
+  margin-right: 0.3em;
+  vertical-align: -0.15em;
+  color: #b91c1c;
+}
+
+/* Links inside rendered Markdown can't carry the component, so they get the
+   same icon as a mask over a red background. */
+.mw-article a[href$=".pdf" i]::before {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.25em;
+  vertical-align: -0.15em;
+  background-color: #b91c1c;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M14 2v6h6' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'/%3E%3Ctext x='12' y='18' text-anchor='middle' font-size='6.5' font-weight='700' font-family='Arial,sans-serif'%3EPDF%3C/text%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M14 2v6h6' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'/%3E%3Ctext x='12' y='18' text-anchor='middle' font-size='6.5' font-weight='700' font-family='Arial,sans-serif'%3EPDF%3C/text%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.mw-pdf-page {
+  height: calc(100vh - 9rem);
+  min-height: 28rem;
+}
+
+.mw-pdf-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem 1rem;
+}
+
+.mw-pdf-heading h1 {
+  margin: 0;
+  font-size: 1.8rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mw-pdf-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.mw-pdf-action {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  color: var(--foreground);
+  font-size: 0.9rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.mw-pdf-action:hover,
+.mw-pdf-action:focus-visible {
+  background: var(--muted);
+}
+
+.mw-pdf-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
 @media (max-width: 900px) {
   .mw-header-inner {
     grid-template-columns: auto 1fr;

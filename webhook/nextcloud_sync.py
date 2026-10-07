@@ -4,9 +4,10 @@ The sync folder (NEXTCLOUD_LOCAL_DIR, relative to the wiki repo) is the meeting 
 - edits made in Nextcloud are downloaded into the folder, committed and pushed to the repo
 - edits that arrive in the folder from the repo (git pull) are uploaded to Nextcloud
 
-Synced are `.md` files, plus every file of any type inside a folder named `data` (at any
-depth). Data folders hold attachments that articles link to with `[[file:data/<name>]]`.
-Both kinds are committed to the repo. Each cycle is a three-way comparison of the local file, the
+Synced are `.md` and `.pdf` files anywhere (the wiki shows PDFs in its viewer and searches
+their text), plus every file of any type inside a folder named `data` (at any depth). Data
+folders hold attachments that articles link to with `[[file:data/<name>]]`. All of them are
+committed to the repo. Each cycle is a three-way comparison of the local file, the
 remote file and the last state both sides agreed on (stored in NEXTCLOUD_STATE_FILE), so a
 change is propagated in whichever direction it happened. When both sides changed the same
 file differently, the repo version wins and the Nextcloud version is kept next to it as
@@ -59,11 +60,12 @@ DATA_DIR = "data"
 
 
 def is_synced_path(rel: str) -> bool:
-    """Markdown files, and any file inside a `data` folder; never hidden paths."""
+    """Markdown and PDF files, and any file inside a `data` folder; never hidden paths."""
     parts = rel.split("/")
     if any(p.startswith(".") for p in parts):
         return False
-    return rel.endswith(".md") or DATA_DIR in parts[:-1]
+    # Scanners and Windows tools like to write `.PDF`; the wiki accepts any case too.
+    return rel.endswith(".md") or rel.lower().endswith(".pdf") or DATA_DIR in parts[:-1]
 
 
 def under(prefix: str, rel: str) -> bool:

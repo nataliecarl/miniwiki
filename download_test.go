@@ -93,32 +93,37 @@ func TestExpandWikiLinksFilePrefix(t *testing.T) {
 		{
 			name: "relative to article directory",
 			in:   "[[file:test.pdf]]", baseDir: "Test",
-			want: "[test.pdf](/api/download?path=Test%2Ftest.pdf)",
+			want: "[test.pdf](/wiki/Test/test.pdf)",
 		},
 		{
 			name: "relative from root article",
 			in:   "[[file:test.pdf]]", baseDir: "",
-			want: "[test.pdf](/api/download?path=test.pdf)",
+			want: "[test.pdf](/wiki/test.pdf)",
 		},
 		{
 			name: "leading slash forces root",
 			in:   "[[file:/shared.pdf]]", baseDir: "Test",
-			want: "[shared.pdf](/api/download?path=shared.pdf)",
+			want: "[shared.pdf](/wiki/shared.pdf)",
 		},
 		{
 			name: "parent traversal within root",
 			in:   "[[file:../shared.pdf]]", baseDir: "Test/Sub",
-			want: "[shared.pdf](/api/download?path=Test%2Fshared.pdf)",
+			want: "[shared.pdf](/wiki/Test/shared.pdf)",
 		},
 		{
 			name: "nested relative path",
 			in:   "[[file:assets/r450.pdf]]", baseDir: "Server",
-			want: "[r450.pdf](/api/download?path=Server%2Fassets%2Fr450.pdf)",
+			want: "[r450.pdf](/wiki/Server/assets/r450.pdf)",
 		},
 		{
 			name: "explicit label wins",
 			in:   "[[file:r450.pdf|Datasheet]]", baseDir: "Server",
-			want: "[Datasheet](/api/download?path=Server%2Fr450.pdf)",
+			want: "[Datasheet](/wiki/Server/r450.pdf)",
+		},
+		{
+			name: "non-pdf attachment downloads",
+			in:   "[[file:data/backup.zip]]", baseDir: "Server",
+			want: "[backup.zip](/api/download?path=Server%2Fdata%2Fbackup.zip)",
 		},
 		{
 			name: "case-insensitive scheme",
@@ -128,7 +133,7 @@ func TestExpandWikiLinksFilePrefix(t *testing.T) {
 		{
 			name: "spaces in path are escaped",
 			in:   "[[file:data sheet.pdf]]", baseDir: "Server",
-			want: "[data sheet.pdf](/api/download?path=Server%2Fdata+sheet.pdf)",
+			want: "[data sheet.pdf](/wiki/Server/data%20sheet.pdf)",
 		},
 		{
 			name: "escaping root keeps raw text",
@@ -159,21 +164,30 @@ func TestLoadDirectoryByRelPathAttachments(t *testing.T) {
 	if err := os.WriteFile(path.Join(base, "r450.pdf"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(path.Join(base, "backup.zip"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	_, articles, _, files, err := loadDirectoryByRelPath("Server")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(articles) != 1 {
-		t.Fatalf("articles = %d, want 1", len(articles))
+	// The PDF is listed with the articles and opens in the viewer; other
+	// attachments stay downloads.
+	if len(articles) != 2 {
+		t.Fatalf("articles = %+v, want guide and r450", articles)
+	}
+	pdf := articles[1]
+	if pdf.Title != "r450" || pdf.Link != "/wiki/Server/r450.pdf" || pdf.Kind != "pdf" {
+		t.Errorf("pdf entry = %+v", pdf)
 	}
 	if len(files) != 1 {
 		t.Fatalf("files = %d, want 1", len(files))
 	}
-	if files[0].Title != "r450.pdf" {
-		t.Errorf("file title = %q, want r450.pdf", files[0].Title)
+	if files[0].Title != "backup.zip" {
+		t.Errorf("file title = %q, want backup.zip", files[0].Title)
 	}
-	if files[0].Link != "/api/download?path=Server%2Fr450.pdf" {
+	if files[0].Link != "/api/download?path=Server%2Fbackup.zip" {
 		t.Errorf("file link = %q", files[0].Link)
 	}
 }

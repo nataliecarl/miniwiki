@@ -3,6 +3,7 @@ import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom"
 import { api, HomeResponse, NavSection, SearchResponse, Suggestion, WikiResponse } from "./api";
 import logoUrl from "./3s-default-transparent.svg";
 import { SineDotsSpinner } from "./SineDotsSpinner";
+import { PdfIcon } from "./PdfIcon";
 
 function useSearchQuery(): string {
   const location = useLocation();
@@ -111,7 +112,10 @@ function SearchBox({
                 navigate(suggestion.link);
                 setOpen(false);
               }}>
-              <span className="mw-suggest-title">{suggestion.title}</span>
+              <span className="mw-suggest-title">
+                {suggestion.kind === "pdf" && <PdfIcon />}
+                {suggestion.title}
+              </span>
               <span className="mw-suggest-meta">{suggestion.context || suggestion.category}</span>
             </a>
           ))}
@@ -180,6 +184,7 @@ function WikiPage() {
               {data.articles.map((item) => (
                 <li key={item.link}>
                   <Link className="mw-directory-link" to={item.link}>
+                    {item.kind === "pdf" && <PdfIcon />}
                     {item.title}
                   </Link>
                 </li>
@@ -215,6 +220,35 @@ function WikiPage() {
             </ul>
           </section>
         )}
+      </div>
+    );
+  }
+  if (data.mode === "pdf" && data.file_url) {
+    return (
+      <div className="mw-page-stack mw-pdf-page">
+        <div className="mw-pdf-heading">
+          <h1>
+            <PdfIcon />
+            {data.title}
+          </h1>
+          <div className="mw-pdf-actions">
+            <a className="mw-pdf-action" href={data.file_url} target="_blank" rel="noopener">
+              Open in new tab
+            </a>
+            <a className="mw-pdf-action" href={data.file_url} download>
+              Download
+            </a>
+          </div>
+        </div>
+        {/* The browser's own PDF viewer; where it can't embed (most phones), the fallback offers the file. */}
+        <object className="mw-pdf-frame" data={data.file_url} type="application/pdf" aria-label={data.title}>
+          <p className="mw-muted">
+            This browser can't show PDFs inline.{" "}
+            <a className="mw-directory-link" href={data.file_url} target="_blank" rel="noopener">
+              Open the PDF
+            </a>
+          </p>
+        </object>
       </div>
     );
   }
@@ -255,6 +289,7 @@ function SearchPage() {
               }
             }}>
             <div className="mw-result-title">
+              {result.kind === "pdf" && <PdfIcon />}
               {result.title}
             </div>
             <div className="mw-result-path">{result.path}</div>
@@ -301,7 +336,10 @@ export default function App() {
               <ul className="mw-sidebar-list">
                 {section.items.map((item) => (
                   <li key={item.link}>
-                    <Link to={item.link}>{item.title}</Link>
+                    <Link to={item.link}>
+                      {item.kind === "pdf" && <PdfIcon />}
+                      {item.title}
+                    </Link>
                   </li>
                 ))}
               </ul>
