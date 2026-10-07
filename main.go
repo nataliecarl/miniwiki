@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -20,6 +21,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -86,6 +88,9 @@ func init() {
 type NavigationElement struct {
 	Title string `json:"title"`
 	Link  string `json:"link"`
+	// Kind is "pdf" for a PDF document, shown in the wiki's PDF viewer; empty
+	// for articles and folders.
+	Kind string `json:"kind,omitempty"`
 }
 
 type titleCacheEntry struct {
@@ -110,6 +115,7 @@ type SearchDoc struct {
 	Link              string
 	Path              string
 	Content           string
+	Kind              string
 	NormalizedTitle   string
 	NormalizedPath    string
 	NormalizedContent string
@@ -122,6 +128,7 @@ type SearchResult struct {
 	RenderedSnippet    template.HTML
 	PlainSnippet       string
 	HighlightedSnippet template.HTML
+	Kind               string
 	Score              int
 }
 
@@ -132,6 +139,7 @@ type SearchSuggestion struct {
 	Category     string `json:"category"`
 	Context      string `json:"context,omitempty"`
 	MatchPreview string `json:"match_preview,omitempty"`
+	Kind         string `json:"kind,omitempty"`
 }
 
 type APINavigationSection struct {
@@ -160,6 +168,7 @@ type APIWikiResponse struct {
 	Files       []NavigationElement `json:"files,omitempty"`
 	RelPath     string              `json:"rel_path,omitempty"`
 	UpdatedAt   string              `json:"updated_at,omitempty"`
+	FileURL     string              `json:"file_url,omitempty"`
 }
 
 type APISearchResult struct {
@@ -169,6 +178,7 @@ type APISearchResult struct {
 	RenderedSnippet  string `json:"rendered_snippet,omitempty"`
 	PlainSnippet     string `json:"plain_snippet,omitempty"`
 	HighlightedPlain string `json:"highlighted_plain,omitempty"`
+	Kind             string `json:"kind,omitempty"`
 }
 
 type SearchIndex struct {
@@ -473,6 +483,74 @@ func wikiTitle(relPath string) string {
 	return path.Base(relPath)
 }
 
+// isPDF reports whether a file name is a PDF document. PDFs are first-class
+// wiki pages: they are listed with articles, open in the PDF viewer at
+// /wiki/<path>.pdf and are searchable by their text.
+func isPDF(name string) bool {
+	return strings.EqualFold(path.Ext(name), ".pdf")
+}
+
+// pdfTitle is a PDF's display title: its file name without the extension.
+// (Embedded PDF titles are too often "Microsoft Word - draft3.docx" to use.)
+func pdfTitle(relPath string) string {
+	base := path.Base(relPath)
+	return strings.TrimSuffix(base, path.Ext(base))
+}
+
+// pdfViewerLink is the escaped /wiki/ link that opens a PDF in the viewer, for
+// use in Markdown where an unescaped space would end the link.
+func pdfViewerLink(relPath string) string {
+	parts := strings.Split(relPath, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return "/wiki/" + strings.Join(parts, "/")
+}
+
+type pdfTextCacheEntry struct {
+	text    string
+	modTime time.Time
+	size    int64
+}
+
+var pdfTextCache = struct {
+	mu      sync.Mutex
+	entries map[string]pdfTextCacheEntry
+}{entries: make(map[string]pdfTextCacheEntry)}
+
+var pdftotextMissing sync.Once
+
+// pdfText returns the plain text of a PDF for the search index, extracted with
+// poppler's pdftotext. Extraction is slow next to reading Markdown, so results
+// are cached per file and only redone when its mtime or size changes. A PDF
+// whose text can't be extracted (scanned images, damage, no pdftotext) yields
+// "" and stays findable by its name.
+func pdfText(absPath string, info fs.FileInfo) string {
+	pdfTextCache.mu.Lock()
+	entry, hit := pdfTextCache.entries[absPath]
+	pdfTextCache.mu.Unlock()
+	if hit && entry.modTime.Equal(info.ModTime()) && entry.size == info.Size() {
+		return entry.text
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "pdftotext", "-q", "-enc", "UTF-8", absPath, "-").Output()
+	text := ""
+	if errors.Is(err, exec.ErrNotFound) {
+		pdftotextMissing.Do(func() {
+			log.Print("pdftotext not found; PDFs are searchable by name only (install poppler-utils)")
+		})
+	} else if err != nil {
+		log.Printf("extracting text from %s: %v", absPath, err)
+	} else {
+		text = strings.Join(strings.Fields(string(out)), " ")
+	}
+	pdfTextCache.mu.Lock()
+	pdfTextCache.entries[absPath] = pdfTextCacheEntry{text: text, modTime: info.ModTime(), size: info.Size()}
+	pdfTextCache.mu.Unlock()
+	return text
+}
+
 // cutFilePrefix reports whether s begins with a case-insensitive "file:"
 // scheme and returns the remainder. It lets `[[file:foo.pdf]]` route to the
 // download endpoint while leaving ordinary wiki targets untouched.
@@ -665,6 +743,10 @@ func expandWikiLinksText(input string, baseDir string) string {
 			}
 			if !explicitLabel {
 				label = linkLabelEscaper.Replace(path.Base(filePath))
+			}
+			// PDFs open in the wiki's PDF viewer, which offers the download.
+			if isPDF(filePath) {
+				return fmt.Sprintf("[%s](%s)", label, pdfViewerLink(filePath))
 			}
 			return fmt.Sprintf("[%s](/api/download?path=%s)", label, url.QueryEscape(filePath))
 		}
@@ -933,6 +1015,14 @@ func loadDirectoryByRelPath(relPath string) (string, []NavigationElement, []Navi
 			})
 			continue
 		}
+		if isPDF(el.Name()) {
+			articles = append(articles, NavigationElement{
+				Title: pdfTitle(el.Name()),
+				Link:  path.Join("/", "wiki", relPath, el.Name()),
+				Kind:  "pdf",
+			})
+			continue
+		}
 		if !strings.HasSuffix(el.Name(), ".md") {
 			// Non-Markdown files are co-located attachments; expose them as downloads.
 			files = append(files, NavigationElement{
@@ -1024,6 +1114,16 @@ func HandleWikiAPI(w http.ResponseWriter, r *http.Request) {
 			Articles: articles,
 			Topics:   topics,
 			Files:    files,
+		})
+		return
+	}
+	if statErr == nil && isPDF(relPath) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(APIWikiResponse{
+			Mode:    "pdf",
+			Title:   pdfTitle(relPath),
+			RelPath: relPath,
+			FileURL: "/api/download?path=" + url.QueryEscape(relPath),
 		})
 		return
 	}
@@ -1120,6 +1220,7 @@ func HandleSearchAPI(w http.ResponseWriter, r *http.Request) {
 			RenderedSnippet:  string(result.RenderedSnippet),
 			PlainSnippet:     result.PlainSnippet,
 			HighlightedPlain: string(result.HighlightedSnippet),
+			Kind:             result.Kind,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1248,7 +1349,7 @@ func latestWikiMarkdownModTime(root string) (time.Time, error) {
 			}
 			return nil
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
+		if d.IsDir() || !(strings.HasSuffix(d.Name(), ".md") || isPDF(d.Name())) {
 			return nil
 		}
 		info, err := d.Info()
@@ -1279,7 +1380,7 @@ func collectMarkdownDocs(root string) ([]SearchDoc, time.Time, error) {
 			}
 			return nil
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
+		if d.IsDir() || !(strings.HasSuffix(d.Name(), ".md") || isPDF(d.Name())) {
 			return nil
 		}
 		info, err := d.Info()
@@ -1288,6 +1389,26 @@ func collectMarkdownDocs(root string) ([]SearchDoc, time.Time, error) {
 		}
 		if info.ModTime().After(latest) {
 			latest = info.ModTime()
+		}
+		if isPDF(d.Name()) {
+			relPath, err := filepath.Rel(root, p)
+			if err != nil {
+				return nil
+			}
+			relPath = filepath.ToSlash(relPath)
+			title := pdfTitle(relPath)
+			content := pdfText(p, info)
+			docs = append(docs, SearchDoc{
+				Title:             title,
+				Link:              path.Join("/wiki", relPath),
+				Path:              relPath,
+				Content:           content,
+				Kind:              "pdf",
+				NormalizedTitle:   normalizeForSearch(title),
+				NormalizedPath:    normalizeForSearch(relPath),
+				NormalizedContent: normalizeForSearch(content),
+			})
+			return nil
 		}
 		body, err := os.ReadFile(p)
 		if err != nil {
@@ -1368,8 +1489,13 @@ func findMatchIndex(haystack, needle []rune) int {
 }
 
 func makeSearchSnippet(content, query string) string {
+	return makePlainTextSnippet(markdownToRenderedPlainText(content), query)
+}
+
+// makePlainTextSnippet cuts the stretch of already-plain text around the first
+// match of query, for snippets of PDF text and of rendered Markdown alike.
+func makePlainTextSnippet(text, query string) string {
 	const maxRunes = 180
-	text := markdownToRenderedPlainText(content)
 	if text == "" {
 		return ""
 	}
@@ -1581,8 +1707,14 @@ func searchDocs(query string) ([]SearchResult, time.Time) {
 		plainSnippet := ""
 		highlightedSnippet := template.HTML("")
 		if contentHit {
-			renderedSnippet = makeRenderedSearchSnippet(doc.Content, query)
-			plainSnippet = makeSearchSnippet(doc.Content, query)
+			// PDF text is not Markdown: rendering it could turn stray `#` or `*`
+			// into headings and emphasis, so PDFs get the plain snippet only.
+			if doc.Kind == "pdf" {
+				plainSnippet = makePlainTextSnippet(doc.Content, query)
+			} else {
+				renderedSnippet = makeRenderedSearchSnippet(doc.Content, query)
+				plainSnippet = makeSearchSnippet(doc.Content, query)
+			}
 			highlightedSnippet = highlightSearchPhrase(plainSnippet, query)
 		}
 		results = append(results, SearchResult{
@@ -1592,6 +1724,7 @@ func searchDocs(query string) ([]SearchResult, time.Time) {
 			RenderedSnippet:    renderedSnippet,
 			PlainSnippet:       plainSnippet,
 			HighlightedSnippet: highlightedSnippet,
+			Kind:               doc.Kind,
 			Score:              score,
 		})
 	}
@@ -1649,6 +1782,7 @@ func suggestDocs(query string, limit int) []SearchSuggestion {
 				Path:     doc.Path,
 				Category: suggestionCategory(doc.Path),
 				Context:  suggestionContext(doc.Path),
+				Kind:     doc.Kind,
 			},
 			score: score,
 		})
@@ -1926,16 +2060,23 @@ func GenerateSidebarContents() (map[NavigationElement][]NavigationElement, error
 					continue
 				}
 				display := deTitle
+				kind := ""
 				if !de.IsDir() {
-					if !strings.HasSuffix(deTitle, ".md") {
+					switch {
+					case isPDF(deTitle):
+						display = pdfTitle(deTitle)
+						kind = "pdf"
+					case strings.HasSuffix(deTitle, ".md"):
+						deTitle = strings.TrimSuffix(deTitle, ".md")
+						display = wikiTitle(path.Join(title, deTitle))
+					default:
 						continue
 					}
-					deTitle = strings.TrimSuffix(deTitle, ".md")
-					display = wikiTitle(path.Join(title, deTitle))
 				}
 				result[e] = append(result[e], NavigationElement{
 					Title: display,
 					Link:  fmt.Sprintf("/wiki/%s/%s", title, deTitle),
+					Kind:  kind,
 				})
 			}
 			// Sort by title: os.ReadDir orders by filename, which no longer
