@@ -156,6 +156,22 @@ class NextcloudShare:
         if resp.status_code != 404:
             resp.raise_for_status()
 
+    def delete_empty_dirs(self, rel: str) -> None:
+        """Remove the folders above file rel that are now empty, up to the share root.
+
+        Git has no folders, so a folder disappears from the repo with its last file; this
+        mirrors that. Anything left in a folder, synced or not, keeps it (and its parents).
+        """
+        parts = rel.split("/")[:-1]
+        while parts:
+            folder = "/".join(parts)
+            entries = self._propfind(folder, 1)
+            if entries is None or len(entries) > 1:  # gone already, or not empty
+                return
+            log.info("delete remote folder %s", folder)
+            self.delete(folder)
+            parts.pop()
+
     def _make_dirs(self, rel: str) -> None:
         parts = rel.split("/")[:-1]
         for i in range(1, len(parts) + 1):
@@ -330,6 +346,14 @@ class Syncer:
             os.remove(os.path.join(self.root, rel))
         except FileNotFoundError:
             pass
+        # Like git, drop the folders the file leaves empty (rmdir refuses non-empty ones).
+        folder = os.path.dirname(rel)
+        while folder:
+            try:
+                os.rmdir(os.path.join(self.root, folder))
+            except OSError:
+                break
+            folder = os.path.dirname(folder)
 
     # --- sync --------------------------------------------------------------------------
 
@@ -414,6 +438,7 @@ class Syncer:
                 elif remote_sha == base_sha and local_sha is None:
                     log.info("delete remote %s", rel)
                     self.share.delete(rel)
+                    self.share.delete_empty_dirs(rel)
                     synced = (None, None)
                 else:
                     if remote_sha not in (None, base_sha):
