@@ -13,6 +13,12 @@ change is propagated in whichever direction it happened. When both sides changed
 file differently, the repo version wins and the Nextcloud version is kept next to it as
 `<name> (conflict <timestamp>).<ext>`, which then syncs like any other new file.
 
+Files are matched across the two sides by their path ignoring case, since Nextcloud's
+desktop clients on Windows and macOS can't keep `Foo.md` and `foo.md` apart. Names are
+still synced exactly as written: a rename that only changes case is a rename of the same
+file. Names that differ only in case on the same side are a clash; they are left alone on
+both sides (and logged) until one of them is renamed.
+
 The repo is the source of truth; Nextcloud is one more way to contribute to it. Only what
 is committed (HEAD) is synced, so the working tree is settled first (see
 _settle_working_tree). Every change from Nextcloud becomes a timestamped commit listing the
@@ -66,6 +72,29 @@ def is_synced_path(rel: str) -> bool:
         return False
     # Scanners and Windows tools like to write `.PDF`; the wiki accepts any case too.
     return rel.endswith(".md") or rel.lower().endswith(".pdf") or DATA_DIR in parts[:-1]
+
+
+def path_key(rel: str) -> str:
+    """What identifies a file on both sides: its path, ignoring case."""
+    return rel.lower()
+
+
+def group_by_key(files: dict[str, str], side: str) -> tuple[dict[str, tuple[str, str]], set[str]]:
+    """Return ({key: (path, value)}, clashing keys) for {path: value}.
+
+    A key spelled more than once on one side (`Foo.md` next to `foo.md`) clashes.
+    """
+    grouped: dict[str, tuple[str, str]] = {}
+    spellings: dict[str, list[str]] = {}
+    for rel, value in files.items():
+        key = path_key(rel)
+        grouped[key] = (rel, value)
+        spellings.setdefault(key, []).append(rel)
+    clashes = {key for key, names in spellings.items() if len(names) > 1}
+    for key in sorted(clashes):
+        log.warning("not syncing %s: names differ only in case in %s",
+                    ", ".join(sorted(spellings[key])), side)
+    return grouped, clashes
 
 
 def under(prefix: str, rel: str) -> bool:
@@ -157,6 +186,14 @@ class NextcloudShare:
         resp = self.client.delete(self._url(rel))
         if resp.status_code != 404:
             resp.raise_for_status()
+
+    def move(self, src: str, dst: str) -> None:
+        """Rename src to dst, keeping the file's Nextcloud history and shares."""
+        self._make_dirs(dst)
+        resp = self.client.request("MOVE", self._url(src),
+                                   headers={"Destination": self._url(dst), "Overwrite": "F"})
+        resp.raise_for_status()
+        self.delete_empty_dirs(src)
 
     def delete_empty_dirs(self, rel: str) -> None:
         """Remove the folders above file rel that are now empty, up to the share root.
@@ -278,11 +315,12 @@ class Syncer:
         known = self.state["files"]
         ours, stray = [], []
         for rel in self._local_dirty():
-            path = os.path.join(self.root, rel)
-            if os.path.isfile(path):
-                mine = rel in known and blob_sha(self._read_local(rel)) == known[rel]["sha"]
+            entry = known.get(path_key(rel))
+            if os.path.isfile(os.path.join(self.root, rel)):
+                mine = (entry is not None and entry["name"] == rel
+                        and blob_sha(self._read_local(rel)) == entry["sha"])
             else:
-                mine = rel not in known
+                mine = entry is None or entry["name"] != rel
             (ours if mine else stray).append(rel)
         if ours:
             self.commit(ours)
@@ -319,6 +357,9 @@ class Syncer:
                 state.update(json.load(f))
         except FileNotFoundError:
             pass
+        # Files are keyed by path_key; older state files were keyed by the name itself.
+        state["files"] = {path_key(s.get("name", rel)): {"name": rel, **s}
+                          for rel, s in state["files"].items()}
         return state
 
     def _save_state(self) -> None:
@@ -348,7 +389,16 @@ class Syncer:
             os.remove(os.path.join(self.root, rel))
         except FileNotFoundError:
             pass
-        # Like git, drop the folders the file leaves empty (rmdir refuses non-empty ones).
+        self._prune_empty_dirs(rel)
+
+    def _rename_local(self, old: str, new: str) -> None:
+        path = os.path.join(self.root, new)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.rename(os.path.join(self.root, old), path)
+        self._prune_empty_dirs(old)
+
+    def _prune_empty_dirs(self, rel: str) -> None:
+        # Like git, drop the folders file rel left empty (rmdir refuses non-empty ones).
         folder = os.path.dirname(rel)
         while folder:
             try:
@@ -372,7 +422,7 @@ class Syncer:
                 return  # nothing changed on either side
 
             remote_dirs, remote = self.share.list_files(
-                self.state["dirs"], {f: s["etag"] for f, s in self.state["files"].items()})
+                self.state["dirs"], {s["name"]: s["etag"] for s in self.state["files"].values()})
             failed = False
             try:
                 changed_locally, failed = self._reconcile(self._local_files(), remote)
@@ -390,17 +440,30 @@ class Syncer:
 
     def _reconcile(self, local: dict[str, str], remote: dict[str, str]
                    ) -> tuple[list[str], bool]:
+        """Compare both sides file by file, matching names ignoring case.
+
+        A name that differs only in case is the same file, and the name itself is synced:
+        the side that renamed it wins, the repo if both did. Names that differ only in case
+        on the same side clash and are left alone on both sides until one is renamed.
+        """
         known = self.state["files"]
         changed_locally: list[str] = []
         failed = False
+        local_by_key, local_clashes = group_by_key(local, "the repo")
+        remote_by_key, remote_clashes = group_by_key(remote, "Nextcloud")
+        clashes = local_clashes | remote_clashes
 
-        for rel in sorted(set(local) | set(remote) | set(known)):
-            if not is_synced_path(rel):
-                continue  # never touch anything else, whatever the inputs say
-            base = known.get(rel)
+        for key in sorted(set(local_by_key) | set(remote_by_key) | set(known)):
+            if key in clashes:
+                continue
+            local_name, local_sha = local_by_key.get(key, (None, None))
+            remote_name, remote_etag = remote_by_key.get(key, (None, None))
+            base = known.get(key)
             base_sha = base["sha"] if base else None
-            local_sha = local.get(rel)
-            remote_etag = remote.get(rel)
+            base_name = base["name"] if base else None
+            if not all(is_synced_path(n) for n in (local_name, remote_name, base_name) if n):
+                continue  # never touch anything else, whatever the inputs say
+            rel = local_name or remote_name or base_name
 
             try:
                 remote_data = None
@@ -410,13 +473,28 @@ class Syncer:
                     remote_sha = base_sha
                 else:
                     # Etag changed: fetch it to see whether the content really did.
-                    remote_data = self.share.download(rel)
+                    remote_data = self.share.download(remote_name)
                     remote_sha = blob_sha(remote_data)
+
+                renamed_here = local_name is not None and local_name != base_name
+                renamed_there = remote_name is not None and remote_name != base_name
+                if local_name and remote_name and local_name != remote_name:
+                    if renamed_there and not renamed_here:
+                        log.info("rename local %s -> %s", local_name, remote_name)
+                        self._rename_local(local_name, remote_name)
+                        changed_locally += [local_name, remote_name]
+                        rel = remote_name
+                    else:
+                        log.info("rename remote %s -> %s", remote_name, rel)
+                        self.share.move(remote_name, rel)
+                # Against a deletion on the other side, a rename counts as an edit.
+                local_changed = local_sha != base_sha or renamed_here and remote_sha is None
+                remote_changed = remote_sha != base_sha or renamed_there and local_sha is None
 
                 if local_sha == remote_sha:
                     synced = (local_sha, remote_etag)  # in sync (or gone on both sides)
                 elif (remote_sha == base_sha and local_sha is None
-                      and not self._deletion_committed(rel)):
+                      and not any(self._deletion_committed(n) for n in {rel, base_name} if n)):
                     # Not in the repo, but never deleted there either (e.g. a stale state
                     # file or a changed NEXTCLOUD_LOCAL_DIR): bring it back, don't delete.
                     log.warning("not deleting remote %s, the repo never had it; "
@@ -426,7 +504,7 @@ class Syncer:
                     self._write_local(rel, remote_data)
                     changed_locally.append(rel)
                     synced = (remote_sha, remote_etag)
-                elif local_sha == base_sha or local_sha is None and remote_sha != base_sha:
+                elif not local_changed or local_sha is None and remote_changed:
                     # Only Nextcloud changed, or it was edited there and deleted in the repo
                     # (the edit wins) -> apply to the repo.
                     if remote_sha is None:
@@ -434,10 +512,12 @@ class Syncer:
                         self._delete_local(rel)
                     else:
                         log.info("download %s", rel)
+                        if remote_data is None:
+                            remote_data = self.share.download(rel)
                         self._write_local(rel, remote_data)
                     changed_locally.append(rel)
                     synced = (remote_sha, remote_etag)
-                elif remote_sha == base_sha and local_sha is None:
+                elif not remote_changed and local_sha is None:
                     log.info("delete remote %s", rel)
                     self.share.delete(rel)
                     self.share.delete_empty_dirs(rel)
@@ -460,9 +540,9 @@ class Syncer:
 
             sha, etag = synced
             if sha is None or etag is None:
-                known.pop(rel, None)
+                known.pop(key, None)
             else:
-                known[rel] = {"sha": sha, "etag": etag}
+                known[key] = {"name": rel, "sha": sha, "etag": etag}
         return changed_locally, failed
 
     def loop(self, interval: float, wake: threading.Event) -> None:
