@@ -14,12 +14,11 @@ When using docker to deploy Miniwiki, some steps are required for the repo to wo
 The webhook container can keep a folder of the wiki in two-way sync with a Nextcloud share link.
 Edits made in Nextcloud are committed and pushed to the wiki repo; edits that reach the repo are uploaded to Nextcloud.
 
-What gets synced:
-- `.md` files, anywhere.
-- **Templates folders**: every file of any type inside a folder named `templates`, at any depth. Use them for templates and attachments (e.g. `.docx` templates, PDFs, HTML pages, images) and link to them from the article next to the folder with `[[file:templates/<name>]]` (see [Links](#links) below).
-- Nothing else. Other files (e.g. `.pdf` or `.docx` outside a templates folder), and hidden files or folders (`.name`), are left alone on both sides.
+What gets synced: every file in the shared folder, of any type, so share a folder that holds only what belongs in the wiki (e.g. a `documentation` folder). Articles link to the other files with `[[file:<name>]]` (see [Links](#links) below). Left alone on both sides are only:
+- hidden files and folders (`.name`),
+- Office lock files (`~$name`), which Word and Excel create next to every open document.
 
-Files in templates folders are committed to git like articles, so keep them small: GitHub rejects files over 100 MB.
+All synced files are committed to git, so keep them small: GitHub rejects files over 100 MB, and one such file blocks every following push of the sync.
 1. In Nextcloud, share a folder by public link with **edit** permission ("Allow upload and editing").
 2. Give the deploy key from step 3 above **write access**, since the sync pushes commits.
 3. Add to `./webhook/.env`:
@@ -43,10 +42,10 @@ If a file was changed on both sides, the repo version wins. The Nextcloud versio
 File names are compared ignoring case, so `Foo.md` and `foo.md` count as the same file, and renaming one into the other (on either side) is synced as a rename. If both spellings exist side by side on one side, neither is synced until one of them is renamed; the webhook log names them.
 
 Folders are synced through the files in them, since git has no folders of its own:
-- A folder appears in the repo once it holds a synced file (an `.md` file, or a templates folder). Folders in Nextcloud that only hold other files (e.g. `.docx`) never show up in the wiki.
-- When the last synced file leaves a folder, the folder disappears from the repo. In Nextcloud it is only deleted once it is completely empty; a folder that still holds anything else, synced or not, is kept.
+- A folder appears in the repo once it holds a file. Empty folders (or ones holding only hidden or lock files) don't show up in the wiki.
+- When the last file leaves a folder, the folder disappears from the repo. In Nextcloud it is only deleted once it is completely empty; a folder that still holds anything, even a hidden file, is kept.
 
-Limitation — renaming or moving folders in the repo: the sync sees this as files deleted at the old path and added at the new one, so only the synced files (the wiki content) move in Nextcloud. Everything else stays in the old folder in Nextcloud, which is kept because it is not empty. This holds even for a rename that only changes case (`Docs` → `docs`), which leaves two folders differing only in case in Nextcloud. Renaming a folder in Nextcloud moves everything there and the wiki follows, so rename folders that hold more than wiki content in Nextcloud.
+Renaming or moving a folder in the repo is synced file by file: the files move in Nextcloud, and the old folder is deleted once it is empty. Hidden files in it stay behind, and so does the old folder then. Renaming a folder in Nextcloud moves it as a whole, and the wiki follows.
 
 ## Links
 Articles link to each other and to files with double brackets:
@@ -67,7 +66,7 @@ What a file link opens depends on the file:
 
 PDFs and HTML pages also show up in the sidebar, folder listings and search like articles, with their file name (without extension) as the title.
 
-With the Nextcloud sync, keep files that articles link to in a `templates` folder: only `.md` files and the contents of `templates` folders are synced, so a PDF or HTML file elsewhere in Nextcloud never reaches the wiki.
+A `templates` folder is shown with its parent folder ("Server / templates"), so it's clear whose templates and attachments it holds; it is a convention for keeping an article's files together, nothing more.
 
 # More Moar Mooaaaaaaaaaaaaarrr
 Moar documentation coming to a repo near you soon! 

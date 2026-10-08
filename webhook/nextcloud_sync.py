@@ -4,10 +4,10 @@ The sync folder (NEXTCLOUD_LOCAL_DIR, relative to the wiki repo) is the meeting 
 - edits made in Nextcloud are downloaded into the folder, committed and pushed to the repo
 - edits that arrive in the folder from the repo (git pull) are uploaded to Nextcloud
 
-Synced are `.md` files anywhere, plus every file of any type inside a folder named
-`templates` (at any depth). Templates folders hold templates and attachments, PDFs included,
-that articles link to with `[[file:templates/<name>]]`. All of them are committed to the repo. Nothing else is synced: a
-shared folder may hold far more (e.g. Office documents) than belongs in git.
+Every file in the shared folder is synced and committed to the repo, whatever its type,
+except hidden files and folders (`.name`) and Office lock files (`~$name`, which Word and
+Excel create next to every open document). Share a folder that holds only what belongs in
+the wiki.
 
 Each cycle is a three-way comparison of the local file, the remote file and the last state
 both sides agreed on (stored in NEXTCLOUD_STATE_FILE), so a change is propagated in
@@ -76,15 +76,12 @@ def blob_sha(data: bytes) -> str:
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
-TEMPLATES_DIR = "templates"
-
-
 def is_synced_path(rel: str) -> bool:
-    """Markdown files, and any file inside a `templates` folder; never hidden paths."""
+    """Any file, except hidden paths and Office lock files."""
     parts = rel.split("/")
     if any(p.startswith(".") for p in parts):
         return False
-    return rel.endswith(".md") or TEMPLATES_DIR in parts[:-1]
+    return not parts[-1].startswith("~$")
 
 
 def path_key(rel: str) -> str:
