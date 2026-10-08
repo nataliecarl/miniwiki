@@ -32,8 +32,17 @@ Change detection is hash based, so an idle cycle is one WebDAV request plus a fe
   reading files; only paths that `git status` reports as changed are hashed from disk.
 - Nextcloud folder etags change whenever anything below them changes. If the share's root
   etag and the sync folder's git tree hash both match the last sync, the cycle stops there.
-  Otherwise only folders whose etag changed are listed, and a file is only downloaded when
-  its etag changed.
+  Otherwise only folders whose etag changed are listed (see NextcloudShare.list_files), and
+  a file is only downloaded when its etag changed.
+
+A large share takes thousands of requests to list the first time. Failed requests are
+retried, and the listing is saved as it goes, so an interrupted first sync resumes where it
+stopped instead of starting over. A folder the server keeps timing out on is skipped (its
+files are left alone on both sides) and retried in the background with a 10 minute
+timeout; if that fails too, it stays skipped until it changes in Nextcloud.
+
+To start over, create a file named `reset` next to the state file: the next cycle drops all
+state. (Deleting the state file does not work while the sync runs; it is written back.)
 """
 
 import hashlib
@@ -42,8 +51,11 @@ import logging
 import os
 import subprocess
 import threading
+import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from typing import Callable
 from urllib.parse import quote, unquote, urlsplit
 
 import httpx
@@ -98,8 +110,11 @@ def group_by_key(files: dict[str, str], side: str) -> tuple[dict[str, tuple[str,
     return grouped, clashes
 
 
-def under(prefix: str, rel: str) -> bool:
-    return rel.startswith(prefix + "/")
+def in_folders(rel: str, folders: set[str]) -> bool:
+    """Whether rel is one of folders or lies below one, ignoring case ("" is the root)."""
+    key = path_key(rel)
+    return any(f == "" or key == path_key(f) or key.startswith(path_key(f) + "/")
+               for f in folders)
 
 
 class NextcloudShare:
@@ -119,15 +134,50 @@ class NextcloudShare:
             headers={"X-Requested-With": "XMLHttpRequest"},
             timeout=60,
         )
+        self.slow_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nextcloud-slow")
+        self.slow_lock = threading.Lock()
+        self.slow_pending = set()
+        self.slow_results = {}
+        self.on_slow_result: Callable[[], None] | None = None
 
     def _url(self, rel: str) -> str:
         return f"{self.base}/{quote(rel)}" if rel else f"{self.base}/"
 
-    def _propfind(self, rel: str, depth: int) -> list[tuple[str, bool, str]] | None:
+    # Retries for a request that times out or meets an overloaded server. A folder listing
+    # that still fails is handed to the slow path instead (see list_files).
+    RETRY_DELAYS: tuple[int, ...] = (5, 30)
+    SLOW_TIMEOUT = httpx.Timeout(60, read=600)
+    SLOW_RETRY_DELAYS: tuple[int, ...] = (60,)
+
+    def _request(self, method: str, rel: str, retry_delays: tuple[int, ...] | None = None,
+                 **kwargs) -> httpx.Response:
+        """Send a request, retrying timeouts, connection errors and server overload.
+
+        Every request the sync makes is safe to repeat: a PUT or DELETE that did go through
+        the first time has the same result again, and a MOVE that did shows up as a 404
+        (handled like any other failure of that file).
+        """
+        delays = self.RETRY_DELAYS if retry_delays is None else retry_delays
+        for delay in (*delays, None):
+            try:
+                resp = self.client.request(method, self._url(rel), **kwargs)
+                if resp.status_code < 500 and resp.status_code != 429:
+                    return resp
+                problem = f"HTTP {resp.status_code}"
+            except httpx.TransportError as e:
+                if delay is None:
+                    raise
+                problem = repr(e)
+            if delay is None:
+                return resp
+            log.warning("%s %s failed (%s), retrying in %ds", method, rel or "/", problem, delay)
+            time.sleep(delay)
+        raise AssertionError("unreachable")
+
+    def _propfind(self, rel: str, depth: int, **kwargs) -> list[tuple[str, bool, str]] | None:
         """Return [(relative path, is folder, etag)] for rel (and its children at depth 1)."""
-        resp = self.client.request(
-            "PROPFIND", self._url(rel), content=PROPFIND_BODY, headers={"Depth": str(depth)}
-        )
+        resp = self._request("PROPFIND", rel, content=PROPFIND_BODY,
+                             headers={"Depth": str(depth)}, **kwargs)
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -143,56 +193,155 @@ class NextcloudShare:
         entries = self._propfind(rel, 0)
         return entries[0][2] if entries else None
 
-    def list_files(self, known_dirs: dict[str, str], known_files: dict[str, str]
-                   ) -> tuple[dict[str, str], dict[str, str]]:
-        """Return ({folder: etag}, {file: etag}) for the share.
+    def list_files(self, root_etag: str, listing: dict[str, dict], skipped: dict[str, str],
+                   save: Callable[[], None], save_every: float = 30
+                   ) -> tuple[dict[str, str], set[str]]:
+        """Return ({file: etag} of the synced files in the share, folders skipped).
 
-        Folders whose etag is unchanged since known_dirs are not listed again; their
-        contents are taken from known_dirs/known_files instead.
+        listing caches each folder's contents as {folder: {"etag": its etag, "dirs":
+        {subfolder: etag}, "files": {synced file: etag}}} and is updated in place. A folder
+        whose etag still matches its cached one is taken from the cache without a request;
+        the others are listed. Every folder's etag is known from its parent's listing
+        before it is visited, so an unchanged share costs no requests at all, and one
+        change costs only the folders on its path.
+
+        The cache only ever holds complete listings of single folders, so it can be saved
+        while the walk is under way (via save, every save_every seconds and when the walk
+        fails): an interrupted walk resumes from it, listing only what it had not reached.
+
+        A folder that can't be listed (the server keeps timing out on it) is skipped, with
+        everything below it, and retried in the background with a much longer timeout; a
+        later walk picks up the result. If that fails too, the folder is recorded in
+        skipped ({folder: etag}) and left out until its etag changes. The caller must leave
+        files below skipped folders alone: their absence here says nothing.
         """
-        dirs: dict[str, str] = {}
+        self._collect_slow_results(listing, skipped)
         files: dict[str, str] = {}
-        pending = [""]
-        while pending:
-            folder = pending.pop()
-            for rel, is_dir, etag in self._propfind(folder, 1) or []:
-                if rel == folder:
-                    dirs[rel] = etag
-                elif is_dir:
-                    if rel.split("/")[-1].startswith("."):
+        seen: set[str] = set()
+        skipped_now: set[str] = set()
+        pending = [("", root_etag)]
+        last_save = time.monotonic()
+        try:
+            while pending:
+                folder, etag = pending.pop()
+                seen.add(folder)
+                entry = listing.get(folder)
+                if entry is None or entry["etag"] != etag:
+                    if skipped.get(folder) == etag or folder in self.slow_pending:
+                        skipped_now.add(folder)
                         continue
-                    if known_dirs.get(rel) == etag:
-                        dirs.update({d: e for d, e in known_dirs.items() if d == rel or under(rel, d)})
-                        files.update({f: e for f, e in known_files.items() if under(rel, f)})
-                    else:
-                        pending.append(rel)
-                elif is_synced_path(rel):
-                    files[rel] = etag
-        return dirs, files
+                    skipped.pop(folder, None)  # changed since it was given up on: try again
+                    try:
+                        entry = self._list_folder(folder)
+                    except (httpx.TransportError, httpx.HTTPStatusError) as e:
+                        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
+                            raise
+                        log.warning("skipping %s for now (%r), retrying it in the background "
+                                    "with a %ds timeout", folder or "/", e, self.SLOW_TIMEOUT.read)
+                        self._list_slowly(folder, etag)
+                        skipped_now.add(folder)
+                        continue
+                    if entry is None:
+                        listing.pop(folder, None)
+                        continue  # deleted since its parent was listed
+                    listing[folder] = entry
+                    if time.monotonic() - last_save > save_every:
+                        save()
+                        last_save = time.monotonic()
+                files.update(entry["files"])
+                pending.extend(entry["dirs"].items())
+        except BaseException:
+            save()
+            raise
+        # Drop what is gone from the share; below a skipped folder nothing is known.
+        for folder in set(listing) - seen:
+            if not in_folders(folder, skipped_now):
+                del listing[folder]
+        for folder in set(skipped) - seen:
+            if not in_folders(folder, skipped_now):
+                del skipped[folder]
+        return files, skipped_now
+
+    def _list_folder(self, folder: str, **kwargs) -> dict | None:
+        """One folder's cache entry for list_files, or None if it does not exist."""
+        entries = self._propfind(folder, 1, **kwargs)
+        if entries is None:
+            return None
+        entry: dict = {"etag": "", "dirs": {}, "files": {}}
+        for rel, is_dir, etag in entries:
+            if rel == folder:
+                entry["etag"] = etag
+            elif is_dir:
+                if not rel.split("/")[-1].startswith("."):
+                    entry["dirs"][rel] = etag
+            elif is_synced_path(rel):
+                entry["files"][rel] = etag
+        return entry
+
+    # --- slow path: folders the normal walk could not list ------------------------------
+
+    slow_pending: set[str]
+    slow_results: dict[str, tuple[str, bool, dict | None]]
+
+    def _list_slowly(self, folder: str, etag: str) -> None:
+        """List folder in the background; its result goes to slow_results."""
+        with self.slow_lock:
+            self.slow_pending.add(folder)
+        self.slow_pool.submit(self._list_slowly_now, folder, etag)
+
+    def _list_slowly_now(self, folder: str, etag: str) -> None:
+        try:
+            entry = self._list_folder(folder, timeout=self.SLOW_TIMEOUT,
+                                      retry_delays=self.SLOW_RETRY_DELAYS)
+            log.info("listed %s in the background", folder or "/")
+            result = (etag, True, entry)
+        except Exception as e:
+            log.warning("giving up on %s (%r): it stays skipped until it changes in Nextcloud",
+                        folder or "/", e)
+            result = (etag, False, None)
+        with self.slow_lock:
+            self.slow_pending.discard(folder)
+            self.slow_results[folder] = result
+        if self.on_slow_result:
+            self.on_slow_result()
+
+    def _collect_slow_results(self, listing: dict[str, dict], skipped: dict[str, str]) -> None:
+        with self.slow_lock:
+            results, self.slow_results = self.slow_results, {}
+        for folder, (etag, ok, entry) in results.items():
+            if not ok:
+                skipped[folder] = etag
+            elif entry is None:
+                listing.pop(folder, None)
+            else:
+                listing[folder] = entry
+
+    def forget_slow_results(self) -> None:
+        with self.slow_lock:
+            self.slow_results = {}
 
     def download(self, rel: str) -> bytes:
-        resp = self.client.get(self._url(rel))
+        resp = self._request("GET", rel)
         resp.raise_for_status()
         return resp.content
 
     def upload(self, rel: str, data: bytes) -> str | None:
         """Upload rel and return its new etag."""
         self._make_dirs(rel)
-        resp = self.client.put(self._url(rel), content=data)
+        resp = self._request("PUT", rel, content=data)
         resp.raise_for_status()
         etag = resp.headers.get("OC-ETag") or resp.headers.get("ETag")
         return etag.strip('"') if etag else self.etag(rel)
 
     def delete(self, rel: str) -> None:
-        resp = self.client.delete(self._url(rel))
+        resp = self._request("DELETE", rel)
         if resp.status_code != 404:
             resp.raise_for_status()
 
     def move(self, src: str, dst: str) -> None:
         """Rename src to dst, keeping the file's Nextcloud history and shares."""
         self._make_dirs(dst)
-        resp = self.client.request("MOVE", self._url(src),
-                                   headers={"Destination": self._url(dst), "Overwrite": "F"})
+        resp = self._request("MOVE", src, headers={"Destination": self._url(dst), "Overwrite": "F"})
         resp.raise_for_status()
         self.delete_empty_dirs(src)
 
@@ -215,7 +364,7 @@ class NextcloudShare:
     def _make_dirs(self, rel: str) -> None:
         parts = rel.split("/")[:-1]
         for i in range(1, len(parts) + 1):
-            resp = self.client.request("MKCOL", self._url("/".join(parts[:i])))
+            resp = self._request("MKCOL", "/".join(parts[:i]))
             # 405: the folder already exists
             if resp.status_code not in (201, 405):
                 resp.raise_for_status()
@@ -351,13 +500,16 @@ class Syncer:
 
     # --- state -------------------------------------------------------------------------
 
-    def _load_state(self) -> dict:
-        state = {"tree": "", "root_etag": "", "dirs": {}, "files": {}}
+    def _load_state(self, fresh: bool = False) -> dict:
+        state = {"tree": "", "root_etag": "", "listing": {}, "skipped": {}, "files": {}}
+        if fresh:
+            return state
         try:
             with open(self.state_file) as f:
                 state.update(json.load(f))
         except FileNotFoundError:
             pass
+        state.pop("dirs", None)  # replaced by "listing"; a missing listing is rebuilt
         # Files are keyed by path_key; older state files were keyed by the name itself.
         state["files"] = {path_key(s.get("name", rel)): {"name": rel, **s}
                           for rel, s in state["files"].items()}
@@ -410,8 +562,24 @@ class Syncer:
 
     # --- sync --------------------------------------------------------------------------
 
+    def reset_requested(self) -> bool:
+        """Consume the reset trigger: a file named `reset` next to the state file."""
+        trigger = os.path.join(os.path.dirname(self.state_file) or ".", "reset")
+        try:
+            os.remove(trigger)
+        except FileNotFoundError:
+            return False
+        return True
+
     def run_once(self) -> None:
         with self.lock:
+            if self.reset_requested():
+                # The running process holds the state in memory, so deleting the state file
+                # by hand would not do: it would be written back. This starts over cleanly.
+                log.warning("state reset requested: forgetting all sync state, starting over")
+                self.state = self._load_state(fresh=True)
+                self.share.forget_slow_results()
+                self._save_state()
             self._settle_working_tree()
             self.pull()
             self.push()
@@ -422,30 +590,34 @@ class Syncer:
                     and root_etag == self.state["root_etag"]):
                 return  # nothing changed on either side
 
-            remote_dirs, remote = self.share.list_files(
-                self.state["dirs"], {s["name"]: s["etag"] for s in self.state["files"].values()})
+            listing = self.state["listing"]
+            remote, skipped = self.share.list_files(root_etag, listing, self.state["skipped"],
+                                                    self._save_state)
             failed = False
             try:
-                changed_locally, failed = self._reconcile(self._local_files(), remote)
+                changed_locally, failed = self._reconcile(self._local_files(), remote, skipped)
+                # Skipped folders still need syncing: keep comparing until they are done.
+                failed = failed or bool(skipped)
                 if changed_locally:
                     self.commit(changed_locally)
                     self.push()
-                # Etags seen before our own uploads: those uploads make the next cycle list
-                # the touched folders once more, then it settles. After a failure, force a
-                # full comparison next time so the failed file is retried.
-                self.state["dirs"] = remote_dirs
-                self.state["root_etag"] = "" if failed else remote_dirs.get("", root_etag)
+                # The listing holds etags seen before our own uploads: those uploads make the
+                # next cycle list the touched folders once more, then it settles. After a
+                # failure, force a comparison next time so the failed file is retried.
+                self.state["root_etag"] = "" if failed else listing[""]["etag"]
                 self.state["tree"] = "" if failed else self._local_tree()
             finally:
                 self._save_state()
 
-    def _reconcile(self, local: dict[str, str], remote: dict[str, str]
-                   ) -> tuple[list[str], bool]:
+    def _reconcile(self, local: dict[str, str], remote: dict[str, str],
+                   skipped: set[str] = frozenset()) -> tuple[list[str], bool]:
         """Compare both sides file by file, matching names ignoring case.
 
         A name that differs only in case is the same file, and the name itself is synced:
         the side that renamed it wins, the repo if both did. Names that differ only in case
         on the same side clash and are left alone on both sides until one is renamed.
+        Files below folders that could not be listed (skipped) are left alone too: they are
+        missing from remote, which must not read as deleted in Nextcloud.
         """
         known = self.state["files"]
         changed_locally: list[str] = []
@@ -462,8 +634,11 @@ class Syncer:
             base = known.get(key)
             base_sha = base["sha"] if base else None
             base_name = base["name"] if base else None
-            if not all(is_synced_path(n) for n in (local_name, remote_name, base_name) if n):
+            names = [n for n in (local_name, remote_name, base_name) if n]
+            if not all(is_synced_path(n) for n in names):
                 continue  # never touch anything else, whatever the inputs say
+            if skipped and any(in_folders(n, skipped) for n in names):
+                continue
             rel = local_name or remote_name or base_name
 
             try:
@@ -547,6 +722,8 @@ class Syncer:
         return changed_locally, failed
 
     def loop(self, interval: float, wake: threading.Event) -> None:
+        # A folder listed in the background is picked up by the next cycle; start it now.
+        self.share.on_slow_result = wake.set
         while True:
             try:
                 self.run_once()

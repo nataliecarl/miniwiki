@@ -28,7 +28,15 @@ Files in templates folders are committed to git like articles, so keep them smal
    - `NEXTCLOUD_LOCAL_DIR=Nextcloud` — the folder inside the wiki repo that mirrors the share (default: the whole wiki)
    - `NEXTCLOUD_SYNC_INTERVAL=60` — seconds between polls of Nextcloud (a GitHub webhook triggers a sync immediately)
    - `WIKI_BRANCH=master` — the wiki branch to commit to
-4. Sync state lives in `./state/`. Delete it to start over. With no state, files that differ on both sides are treated as conflicts.
+4. Sync state lives in `./state/`. To start over, see the reset below. With no state, files that differ on both sides are treated as conflicts.
+
+The first sync has to list every folder of the share once, which takes a while for a large share (roughly 0.5 s per folder). Requests that time out are retried, and the listing is saved as it goes, so if the first sync is interrupted (an error, a restart) the next attempt continues where it stopped. After that, a sync only lists the folders on the path of something that changed. A folder that Nextcloud keeps timing out on is skipped, so the rest of the sync goes ahead; its files are left alone on both sides meanwhile. It is retried in the background with a 10 minute timeout, and if that fails too, it stays skipped until something in it changes in Nextcloud. The webhook log names skipped folders.
+
+To reset the sync state (e.g. to test a first sync again), create a file named `reset` in `./state/`; the next sync cycle (within `NEXTCLOUD_SYNC_INTERVAL`) forgets all state and starts over:
+```bash
+docker exec miniwiki-webhook touch /app/state/reset
+```
+Deleting `./state/nextcloud-sync.json` instead does not work while the webhook container runs, since it writes its state back. Resetting the state does not touch the wiki repo or Nextcloud: files that are the same on both sides are simply recognised as in sync again.
 
 If a file was changed on both sides, the repo version wins. The Nextcloud version is saved next to it as `<name> (conflict <timestamp>).<ext>`.
 
