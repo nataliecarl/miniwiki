@@ -16,8 +16,8 @@ Edits made in Nextcloud are committed and pushed to the wiki repo; edits that re
 
 What gets synced:
 - `.md` files, anywhere.
-- **Data folders**: every file of any type inside a folder named `data`, at any depth. Use them for attachments (PDFs, images, archives) and link to them from the article next to the folder with `[[file:data/<name>]]`, e.g. `Server/data/r450.pdf` from `Server/Hans und Peter.md`. A leading `/` resolves from the wiki root: `[[file:/data/<name>]]`.
-- Nothing else. Other files, and hidden files or folders (`.name`), are left alone on both sides.
+- **Data folders**: every file of any type inside a folder named `data`, at any depth. Use them for attachments (PDFs, images, archives; PDFs open in the wiki's PDF viewer and their text is searchable) and link to them from the article next to the folder with `[[file:data/<name>]]`, e.g. `Server/data/r450.pdf` from `Server/Hans und Peter.md`. A leading `/` resolves from the wiki root: `[[file:/data/<name>]]`.
+- Nothing else. Other files (e.g. `.pdf` or `.docx` outside a data folder), and hidden files or folders (`.name`), are left alone on both sides.
 
 Data files are committed to git like articles, so keep them small: GitHub rejects files over 100 MB.
 1. In Nextcloud, share a folder by public link with **edit** permission ("Allow upload and editing").
@@ -31,6 +31,8 @@ Data files are committed to git like articles, so keep them small: GitHub reject
 4. Sync state lives in `./state/`. Delete it to start over. With no state, files that differ on both sides are treated as conflicts.
 
 If a file was changed on both sides, the repo version wins. The Nextcloud version is saved next to it as `<name> (conflict <timestamp>).<ext>`.
+
+File names are compared ignoring case, so `Foo.md` and `foo.md` count as the same file, and renaming one into the other (on either side) is synced as a rename. If both spellings exist side by side on one side, neither is synced until one of them is renamed; the webhook log names them.
 
 # More Moar Mooaaaaaaaaaaaaarrr
 Moar documentation coming to a repo near you soon! 
