@@ -16,10 +16,10 @@ Edits made in Nextcloud are committed and pushed to the wiki repo; edits that re
 
 What gets synced:
 - `.md` files, anywhere.
-- **Data folders**: every file of any type inside a folder named `data`, at any depth. Use them for attachments (PDFs, images, archives; PDFs open in the wiki's PDF viewer and their text is searchable) and link to them from the article next to the folder with `[[file:data/<name>]]`, e.g. `Server/data/r450.pdf` from `Server/Hans und Peter.md`. A leading `/` resolves from the wiki root: `[[file:/data/<name>]]`.
-- Nothing else. Other files (e.g. `.pdf` or `.docx` outside a data folder), and hidden files or folders (`.name`), are left alone on both sides.
+- **Templates folders**: every file of any type inside a folder named `templates`, at any depth. Use them for templates and attachments (e.g. `.docx` templates, PDFs, HTML pages, images) and link to them from the article next to the folder with `[[file:templates/<name>]]` (see [Links](#links) below).
+- Nothing else. Other files (e.g. `.pdf` or `.docx` outside a templates folder), and hidden files or folders (`.name`), are left alone on both sides.
 
-Data files are committed to git like articles, so keep them small: GitHub rejects files over 100 MB.
+Files in templates folders are committed to git like articles, so keep them small: GitHub rejects files over 100 MB.
 1. In Nextcloud, share a folder by public link with **edit** permission ("Allow upload and editing").
 2. Give the deploy key from step 3 above **write access**, since the sync pushes commits.
 3. Add to `./webhook/.env`:
@@ -33,6 +33,33 @@ Data files are committed to git like articles, so keep them small: GitHub reject
 If a file was changed on both sides, the repo version wins. The Nextcloud version is saved next to it as `<name> (conflict <timestamp>).<ext>`.
 
 File names are compared ignoring case, so `Foo.md` and `foo.md` count as the same file, and renaming one into the other (on either side) is synced as a rename. If both spellings exist side by side on one side, neither is synced until one of them is renamed; the webhook log names them.
+
+Folders are synced through the files in them, since git has no folders of its own:
+- A folder appears in the repo once it holds a synced file (an `.md` file, or a templates folder). Folders in Nextcloud that only hold other files (e.g. `.docx`) never show up in the wiki.
+- When the last synced file leaves a folder, the folder disappears from the repo. In Nextcloud it is only deleted once it is completely empty; a folder that still holds anything else, synced or not, is kept.
+
+Limitation — renaming or moving folders in the repo: the sync sees this as files deleted at the old path and added at the new one, so only the synced files (the wiki content) move in Nextcloud. Everything else stays in the old folder in Nextcloud, which is kept because it is not empty. This holds even for a rename that only changes case (`Docs` → `docs`), which leaves two folders differing only in case in Nextcloud. Renaming a folder in Nextcloud moves everything there and the wiki follows, so rename folders that hold more than wiki content in Nextcloud.
+
+## Links
+Articles link to each other and to files with double brackets:
+
+| Syntax | Links to |
+| --- | --- |
+| `[[Server/Hans und Peter]]` | The article `Server/Hans und Peter.md`. The path starts at the wiki root and leaves out `.md`. The link text is the article's title (its first `# Heading`). |
+| `[[Server/Hans und Peter\|the servers]]` | The same, with your own link text. |
+| `[[file:templates/r450.pdf]]` | A file **next to the current article**: from `Server/Hans und Peter.md` this is `Server/templates/r450.pdf`. The link text is the file name. |
+| `[[file:/templates/r450.pdf]]` | A leading `/` starts at the wiki root instead: `templates/r450.pdf`. |
+| `[[file:templates/r450.pdf\|Manual]]` | Any file link with your own link text. |
+
+What a file link opens depends on the file:
+- **PDFs** open in the wiki's PDF viewer. Their text is searchable.
+- **HTML pages** (`.html`, `.htm`) open in the wiki's HTML viewer. Their visible text is searchable. They are shown in a sandbox: text, CSS and images work, including files the page references next to itself (`<img src="rack.png">` in `templates/plan.html` loads `templates/rack.png`), but scripts and forms do not run. Use HTML for static pages such as exports, not for interactive ones.
+- **Text, images, audio and video** open in the browser. A `.md` file opened this way shows its source; link it as an article (`[[Server/templates/Checklist]]`) to see it rendered.
+- **Everything else** (e.g. `.docx`, `.zip`) downloads.
+
+PDFs and HTML pages also show up in the sidebar, folder listings and search like articles, with their file name (without extension) as the title.
+
+With the Nextcloud sync, keep files that articles link to in a `templates` folder: only `.md` files and the contents of `templates` folders are synced, so a PDF or HTML file elsewhere in Nextcloud never reaches the wiki.
 
 # More Moar Mooaaaaaaaaaaaaarrr
 Moar documentation coming to a repo near you soon! 

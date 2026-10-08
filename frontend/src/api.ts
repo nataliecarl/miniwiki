@@ -1,5 +1,5 @@
-// "pdf" marks a PDF document, which opens in the PDF viewer.
-export type ItemKind = "pdf";
+// "pdf" marks a PDF document and "html" an HTML page; both open in a viewer.
+export type ItemKind = "pdf" | "html";
 
 export type NavItem = {
   title: string;
@@ -24,7 +24,7 @@ export type HomeResponse = {
 };
 
 export type WikiResponse = {
-  mode: "article" | "directory" | "pdf";
+  mode: "article" | "directory" | ItemKind;
   title: string;
   content_html?: string;
   content?: string;

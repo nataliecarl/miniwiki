@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path"
+	"testing"
+)
 
 func TestHeadlineFromMarkdown(t *testing.T) {
 	cases := []struct {
@@ -105,5 +109,47 @@ func TestSuggestionContext(t *testing.T) {
 		if got := suggestionContext(tc.docPath); got != tc.want {
 			t.Errorf("suggestionContext(%q) = %q, want %q", tc.docPath, got, tc.want)
 		}
+	}
+}
+
+func TestTemplatesFolderShownWithParent(t *testing.T) {
+	cases := map[string]string{
+		"Server/templates":      "Server / templates",
+		"Server/R450/templates": "R450 / templates",
+		"templates":             "templates",
+		"Server":                "Server",
+		"Server/Templates":      "Templates",
+	}
+	for in, want := range cases {
+		if got := folderTitle(in); got != want {
+			t.Errorf("folderTitle(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	tmp := withTempWiki(t)
+	if err := os.MkdirAll(path.Join(tmp, "wiki", "Server", "templates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nav, err := GenerateSidebarContents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := nav[NavigationElement{Title: "Server", Link: "/wiki/Server"}]
+	if len(items) != 1 || items[0].Title != "Server / templates" || items[0].Link != "/wiki/Server/templates" {
+		t.Errorf("sidebar = %+v", items)
+	}
+	_, _, topics, _, err := loadDirectoryByRelPath("Server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(topics) != 1 || topics[0].Title != "Server / templates" {
+		t.Errorf("topics = %+v", topics)
+	}
+	title, _, _, _, err := loadDirectoryByRelPath("Server/templates")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title != "Server / templates" {
+		t.Errorf("directory title = %q", title)
 	}
 }

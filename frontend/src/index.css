@@ -526,13 +526,17 @@ body {
   color: var(--muted-foreground);
 }
 
-/* PDFs: the icon marks every link that opens one, and the viewer page embeds it. */
-.mw-pdf-icon {
+/* PDFs and HTML pages: the icon marks every link that opens one, and the viewer page embeds it. */
+.mw-file-icon {
   display: inline-block;
   flex: none;
   margin-right: 0.3em;
   vertical-align: -0.15em;
   color: #b91c1c;
+}
+
+.mw-file-icon-html {
+  color: #1d4ed8;
 }
 
 /* Links inside rendered Markdown can't carry the component, so they get the
@@ -547,6 +551,19 @@ body {
   background-color: #b91c1c;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M14 2v6h6' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'/%3E%3Ctext x='12' y='18' text-anchor='middle' font-size='6.5' font-weight='700' font-family='Arial,sans-serif'%3EPDF%3C/text%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M14 2v6h6' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'/%3E%3Ctext x='12' y='18' text-anchor='middle' font-size='6.5' font-weight='700' font-family='Arial,sans-serif'%3EPDF%3C/text%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.mw-article a[href$=".html" i]::before,
+.mw-article a[href$=".htm" i]::before {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.25em;
+  vertical-align: -0.15em;
+  background-color: #1d4ed8;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M14 2v6h6' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'/%3E%3Ctext x='12' y='18' text-anchor='middle' font-size='5' font-weight='700' font-family='Arial,sans-serif'%3EHTML%3C/text%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M14 2v6h6' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'/%3E%3Ctext x='12' y='18' text-anchor='middle' font-size='5' font-weight='700' font-family='Arial,sans-serif'%3EHTML%3C/text%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 .mw-pdf-page {
@@ -595,6 +612,11 @@ body {
   min-height: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+/* HTML pages are written for a white page, whatever the wiki's theme. */
+.mw-html-frame {
+  background: #fff;
 }
 
 @media (max-width: 900px) {

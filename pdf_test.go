@@ -59,7 +59,7 @@ func TestHandleWikiAPIPDF(t *testing.T) {
 		Mode:    "pdf",
 		Title:   "R450 Manual",
 		RelPath: "Server/R450 Manual.pdf",
-		FileURL: "/api/download?path=Server%2FR450+Manual.pdf",
+		FileURL: "/api/download/Server/R450%20Manual.pdf",
 	}
 	if fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", want) {
 		t.Errorf("response = %+v, want %+v", got, want)

@@ -46,11 +46,12 @@ func TestHandleDownloadAPI(t *testing.T) {
 		wantBody        string
 		wantDisposition string
 		wantType        string
+		wantCSP         string
 	}{
 		{name: "displays pdf inline", path: "Server/r450.pdf", wantStatus: http.StatusOK, wantBody: string(want), wantDisposition: `inline; filename="r450.pdf"`, wantType: "application/pdf"},
 		{name: "displays markdown source inline", path: "Server/notes.md", wantStatus: http.StatusOK, wantBody: "# hi", wantDisposition: `inline; filename="notes.md"`, wantType: "text/plain; charset=utf-8"},
 		{name: "downloads unknown type", path: "Server/backup.zip", wantStatus: http.StatusOK, wantDisposition: `attachment; filename="backup.zip"`},
-		{name: "downloads html rather than rendering it", path: "Server/page.html", wantStatus: http.StatusOK, wantDisposition: `attachment; filename="page.html"`},
+		{name: "displays html inline but sandboxed", path: "Server/page.html", wantStatus: http.StatusOK, wantBody: "<h1>hi</h1>", wantDisposition: `inline; filename="page.html"`, wantType: "text/html", wantCSP: htmlSandboxPolicy},
 		{name: "rejects traversal", path: "../main.go", wantStatus: http.StatusBadRequest},
 		{name: "rejects missing", path: "Server/nope.zip", wantStatus: http.StatusNotFound},
 		{name: "rejects directory", path: "Server", wantStatus: http.StatusNotFound},
@@ -79,7 +80,51 @@ func TestHandleDownloadAPI(t *testing.T) {
 					t.Errorf("Content-Type = %q, want %q", got, tc.wantType)
 				}
 			}
+			if got := rec.Header().Get("Content-Security-Policy"); got != tc.wantCSP {
+				t.Errorf("Content-Security-Policy = %q, want %q", got, tc.wantCSP)
+			}
 		})
+	}
+}
+
+// HTML pages are embedded by their path-style URL (see fileURL), so that the
+// images and stylesheets they reference relatively resolve next to them.
+func TestHandleDownloadAPIPathURL(t *testing.T) {
+	tmp := withTempWiki(t)
+	dir := path.Join(tmp, "wiki", "Server", "templates")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"Rack Plan.html": `<img src="rack.png">`, "rack.png": "PNG"} {
+		if err := os.WriteFile(path.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got, want := fileURL("Server/templates/Rack Plan.html"), "/api/download/Server/templates/Rack%20Plan.html"; got != want {
+		t.Fatalf("fileURL = %q, want %q", got, want)
+	}
+	cases := []struct {
+		url        string
+		wantStatus int
+		wantBody   string
+	}{
+		{url: "/api/download/Server/templates/Rack%20Plan.html", wantStatus: http.StatusOK, wantBody: `<img src="rack.png">`},
+		{url: "/api/download/Server/templates/rack.png", wantStatus: http.StatusOK, wantBody: "PNG"},
+		{url: "/api/download/Server/templates/..%2F..%2F..%2Fmain.go", wantStatus: http.StatusBadRequest},
+		{url: "/api/download/", wantStatus: http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+		rec := httptest.NewRecorder()
+		HandleDownloadAPI(rec, req)
+		if rec.Code != tc.wantStatus {
+			t.Errorf("%s: status = %d, want %d", tc.url, rec.Code, tc.wantStatus)
+			continue
+		}
+		if tc.wantBody != "" && rec.Body.String() != tc.wantBody {
+			t.Errorf("%s: body = %q, want %q", tc.url, rec.Body.String(), tc.wantBody)
+		}
 	}
 }
 

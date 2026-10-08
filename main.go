@@ -490,21 +490,84 @@ func isPDF(name string) bool {
 	return strings.EqualFold(path.Ext(name), ".pdf")
 }
 
-// pdfTitle is a PDF's display title: its file name without the extension.
-// (Embedded PDF titles are too often "Microsoft Word - draft3.docx" to use.)
-func pdfTitle(relPath string) string {
+// isHTML reports whether a file name is an HTML page. Like PDFs, HTML pages are
+// first-class wiki pages that open in a viewer at /wiki/<path>.html and are
+// searchable by their text; they are shown sandboxed (see htmlSandboxPolicy).
+func isHTML(name string) bool {
+	ext := path.Ext(name)
+	return strings.EqualFold(ext, ".html") || strings.EqualFold(ext, ".htm")
+}
+
+// viewerKind is "pdf" or "html" for a file shown in a viewer page rather than
+// rendered as an article, and "" for anything else.
+func viewerKind(name string) string {
+	switch {
+	case isPDF(name):
+		return "pdf"
+	case isHTML(name):
+		return "html"
+	}
+	return ""
+}
+
+// fileTitle is a PDF's or HTML page's display title: its file name without the
+// extension. (Embedded PDF titles are too often "Microsoft Word - draft3.docx"
+// to use, and exported HTML titles fare little better.)
+func fileTitle(relPath string) string {
 	base := path.Base(relPath)
 	return strings.TrimSuffix(base, path.Ext(base))
 }
 
-// pdfViewerLink is the escaped /wiki/ link that opens a PDF in the viewer, for
-// use in Markdown where an unescaped space would end the link.
-func pdfViewerLink(relPath string) string {
+// templatesDir is the folder name that holds an article folder's templates and
+// attachments (the convention the Nextcloud sync is built around).
+const templatesDir = "templates"
+
+// folderTitle is a folder's display name: its own name, except that a
+// templates folder is shown with its parent ("Server / templates"), since
+// many folders have one and a bare "templates" says nothing about whose it is.
+// The separator matches suggestionContext.
+func folderTitle(relPath string) string {
+	name := path.Base(relPath)
+	parent := path.Dir(relPath)
+	if name != templatesDir || parent == "." || parent == "/" {
+		return name
+	}
+	return path.Base(parent) + " / " + name
+}
+
+// escapePath escapes each segment of a slash-separated path for use in a URL,
+// e.g. in Markdown where an unescaped space would end the link.
+func escapePath(relPath string) string {
 	parts := strings.Split(relPath, "/")
 	for i, part := range parts {
 		parts[i] = url.PathEscape(part)
 	}
-	return "/wiki/" + strings.Join(parts, "/")
+	return strings.Join(parts, "/")
+}
+
+// viewerLink is the escaped /wiki/ link that opens a PDF or HTML page in its viewer.
+func viewerLink(relPath string) string {
+	return "/wiki/" + escapePath(relPath)
+}
+
+// fileURL is the /api/download link for a raw wiki file. It carries the path
+// in the URL rather than a query, so relative references inside an HTML page
+// (images, stylesheets) resolve to the files next to it.
+func fileURL(relPath string) string {
+	return "/api/download/" + escapePath(relPath)
+}
+
+var (
+	htmlInvisibleRe = regexp.MustCompile(`(?is)<script\b.*?</script\s*>|<style\b.*?</style\s*>|<!--.*?-->`)
+	htmlTagRe       = regexp.MustCompile(`<[^>]*>`)
+)
+
+// htmlText returns the visible text of an HTML page for the search index:
+// scripts, styles, comments and tags dropped, entities decoded.
+func htmlText(body []byte) string {
+	text := htmlInvisibleRe.ReplaceAllString(string(body), " ")
+	text = htmlTagRe.ReplaceAllString(text, " ")
+	return strings.Join(strings.Fields(stdhtml.UnescapeString(text)), " ")
 }
 
 type pdfTextCacheEntry struct {
@@ -744,9 +807,9 @@ func expandWikiLinksText(input string, baseDir string) string {
 			if !explicitLabel {
 				label = linkLabelEscaper.Replace(path.Base(filePath))
 			}
-			// PDFs open in the wiki's PDF viewer, which offers the download.
-			if isPDF(filePath) {
-				return fmt.Sprintf("[%s](%s)", label, pdfViewerLink(filePath))
+			// PDFs and HTML pages open in the wiki's viewer, which offers the download.
+			if viewerKind(filePath) != "" {
+				return fmt.Sprintf("[%s](%s)", label, viewerLink(filePath))
 			}
 			return fmt.Sprintf("[%s](/api/download?path=%s)", label, url.QueryEscape(filePath))
 		}
@@ -787,6 +850,7 @@ func main() {
 	http.HandleFunc("/api/wiki", HandleWikiAPI)
 	http.HandleFunc("/api/search", HandleSearchAPI)
 	http.HandleFunc("/api/download", HandleDownloadAPI)
+	http.HandleFunc("/api/download/", HandleDownloadAPI)
 	http.HandleFunc("/api/search/suggest", HandleSearchSuggest)
 
 	// Keep legacy suggestion endpoint for backward compatibility.
@@ -1010,16 +1074,16 @@ func loadDirectoryByRelPath(relPath string) (string, []NavigationElement, []Navi
 		}
 		if el.IsDir() {
 			topics = append(topics, NavigationElement{
-				Title: el.Name(),
+				Title: folderTitle(path.Join(relPath, el.Name())),
 				Link:  path.Join("/", "wiki", relPath, el.Name()),
 			})
 			continue
 		}
-		if isPDF(el.Name()) {
+		if kind := viewerKind(el.Name()); kind != "" {
 			articles = append(articles, NavigationElement{
-				Title: pdfTitle(el.Name()),
+				Title: fileTitle(el.Name()),
 				Link:  path.Join("/", "wiki", relPath, el.Name()),
-				Kind:  "pdf",
+				Kind:  kind,
 			})
 			continue
 		}
@@ -1040,8 +1104,7 @@ func loadDirectoryByRelPath(relPath string) (string, []NavigationElement, []Navi
 	sort.Slice(articles, func(i, j int) bool { return articles[i].Title < articles[j].Title })
 	sort.Slice(topics, func(i, j int) bool { return topics[i].Title < topics[j].Title })
 	sort.Slice(files, func(i, j int) bool { return files[i].Title < files[j].Title })
-	title := path.Base(relPath)
-	return title, articles, topics, files, nil
+	return folderTitle(relPath), articles, topics, files, nil
 }
 
 func convertNavigation(nav map[NavigationElement][]NavigationElement) []APINavigationSection {
@@ -1117,13 +1180,13 @@ func HandleWikiAPI(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if statErr == nil && isPDF(relPath) {
+	if kind := viewerKind(relPath); statErr == nil && kind != "" {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(APIWikiResponse{
-			Mode:    "pdf",
-			Title:   pdfTitle(relPath),
+			Mode:    kind,
+			Title:   fileTitle(relPath),
 			RelPath: relPath,
-			FileURL: "/api/download?path=" + url.QueryEscape(relPath),
+			FileURL: fileURL(relPath),
 		})
 		return
 	}
@@ -1146,7 +1209,15 @@ func HandleWikiAPI(w http.ResponseWriter, r *http.Request) {
 // makes a browser render it in place. It is deliberately an allowlist rather
 // than a blocklist: anything served inline from this origin runs in the wiki's
 // security context, so active formats (.html, .svg, .xhtml) stay off the list
-// and download instead. Everything absent from the map is an attachment.
+// and download instead. Everything absent from the map is an attachment. HTML
+// pages are the one exception, served inline under htmlSandboxPolicy.
+// htmlSandboxPolicy is the Content-Security-Policy an HTML page is served
+// with. `sandbox` puts it in an opaque origin with scripts, forms and top-level
+// navigation disabled, so it can't read the wiki's data or act on its behalf;
+// links may still open in a new tab. Static pages (text, CSS, images) render
+// normally.
+const htmlSandboxPolicy = "sandbox allow-popups allow-popups-to-escape-sandbox"
+
 var inlineContentTypes = map[string]string{
 	".pdf":  "application/pdf",
 	".txt":  "text/plain; charset=utf-8",
@@ -1179,7 +1250,13 @@ var inlineContentTypes = map[string]string{
 // the source, while a plain `[[notes]]` link still renders it as an article via
 // /api/wiki.
 func HandleDownloadAPI(w http.ResponseWriter, r *http.Request) {
-	relPath, err := sanitizeWikiRelPath(r.URL.Query().Get("path"))
+	// The path comes as ?path= or, for HTML pages and what they reference, in
+	// the URL itself (/api/download/<path>; see fileURL).
+	raw := r.URL.Query().Get("path")
+	if rest, ok := strings.CutPrefix(r.URL.Path, "/api/download/"); ok && raw == "" {
+		raw = rest
+	}
+	relPath, err := sanitizeWikiRelPath(raw)
 	if err != nil || relPath == "" {
 		http.Error(w, "invalid path", http.StatusBadRequest)
 		return
@@ -1191,7 +1268,13 @@ func HandleDownloadAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	disposition := "attachment"
-	if ctype, ok := inlineContentTypes[strings.ToLower(path.Ext(relPath))]; ok {
+	if isHTML(relPath) {
+		// HTML renders in place, but sandboxed: the wiki embeds it and people
+		// open it directly, and either way it must not run as the wiki.
+		disposition = "inline"
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Content-Security-Policy", htmlSandboxPolicy)
+	} else if ctype, ok := inlineContentTypes[strings.ToLower(path.Ext(relPath))]; ok {
 		disposition = "inline"
 		// Set the type explicitly: ServeFile would otherwise sniff, and for
 		// .md it has no extension mapping at all.
@@ -1349,7 +1432,7 @@ func latestWikiMarkdownModTime(root string) (time.Time, error) {
 			}
 			return nil
 		}
-		if d.IsDir() || !(strings.HasSuffix(d.Name(), ".md") || isPDF(d.Name())) {
+		if d.IsDir() || !(strings.HasSuffix(d.Name(), ".md") || viewerKind(d.Name()) != "") {
 			return nil
 		}
 		info, err := d.Info()
@@ -1380,7 +1463,7 @@ func collectMarkdownDocs(root string) ([]SearchDoc, time.Time, error) {
 			}
 			return nil
 		}
-		if d.IsDir() || !(strings.HasSuffix(d.Name(), ".md") || isPDF(d.Name())) {
+		if d.IsDir() || !(strings.HasSuffix(d.Name(), ".md") || viewerKind(d.Name()) != "") {
 			return nil
 		}
 		info, err := d.Info()
@@ -1390,20 +1473,29 @@ func collectMarkdownDocs(root string) ([]SearchDoc, time.Time, error) {
 		if info.ModTime().After(latest) {
 			latest = info.ModTime()
 		}
-		if isPDF(d.Name()) {
+		if kind := viewerKind(d.Name()); kind != "" {
 			relPath, err := filepath.Rel(root, p)
 			if err != nil {
 				return nil
 			}
 			relPath = filepath.ToSlash(relPath)
-			title := pdfTitle(relPath)
-			content := pdfText(p, info)
+			title := fileTitle(relPath)
+			var content string
+			if kind == "pdf" {
+				content = pdfText(p, info)
+			} else {
+				body, err := os.ReadFile(p)
+				if err != nil {
+					return err
+				}
+				content = htmlText(body)
+			}
 			docs = append(docs, SearchDoc{
 				Title:             title,
 				Link:              path.Join("/wiki", relPath),
 				Path:              relPath,
 				Content:           content,
-				Kind:              "pdf",
+				Kind:              kind,
 				NormalizedTitle:   normalizeForSearch(title),
 				NormalizedPath:    normalizeForSearch(relPath),
 				NormalizedContent: normalizeForSearch(content),
@@ -1707,9 +1799,9 @@ func searchDocs(query string) ([]SearchResult, time.Time) {
 		plainSnippet := ""
 		highlightedSnippet := template.HTML("")
 		if contentHit {
-			// PDF text is not Markdown: rendering it could turn stray `#` or `*`
-			// into headings and emphasis, so PDFs get the plain snippet only.
-			if doc.Kind == "pdf" {
+			// PDF and HTML text is not Markdown: rendering it could turn stray `#`
+			// or `*` into headings and emphasis, so they get the plain snippet only.
+			if doc.Kind != "" {
 				plainSnippet = makePlainTextSnippet(doc.Content, query)
 			} else {
 				renderedSnippet = makeRenderedSearchSnippet(doc.Content, query)
@@ -2061,11 +2153,13 @@ func GenerateSidebarContents() (map[NavigationElement][]NavigationElement, error
 				}
 				display := deTitle
 				kind := ""
-				if !de.IsDir() {
+				if de.IsDir() {
+					display = folderTitle(path.Join(title, deTitle))
+				} else {
 					switch {
-					case isPDF(deTitle):
-						display = pdfTitle(deTitle)
-						kind = "pdf"
+					case viewerKind(deTitle) != "":
+						display = fileTitle(deTitle)
+						kind = viewerKind(deTitle)
 					case strings.HasSuffix(deTitle, ".md"):
 						deTitle = strings.TrimSuffix(deTitle, ".md")
 						display = wikiTitle(path.Join(title, deTitle))

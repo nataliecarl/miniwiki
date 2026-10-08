@@ -3,7 +3,7 @@ import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom"
 import { api, HomeResponse, NavSection, SearchResponse, Suggestion, WikiResponse } from "./api";
 import logoUrl from "./3s-default-transparent.svg";
 import { SineDotsSpinner } from "./SineDotsSpinner";
-import { PdfIcon } from "./PdfIcon";
+import { FileIcon } from "./FileIcon";
 
 function useSearchQuery(): string {
   const location = useLocation();
@@ -113,7 +113,7 @@ function SearchBox({
                 setOpen(false);
               }}>
               <span className="mw-suggest-title">
-                {suggestion.kind === "pdf" && <PdfIcon />}
+                {suggestion.kind && <FileIcon kind={suggestion.kind} />}
                 {suggestion.title}
               </span>
               <span className="mw-suggest-meta">{suggestion.context || suggestion.category}</span>
@@ -184,7 +184,7 @@ function WikiPage() {
               {data.articles.map((item) => (
                 <li key={item.link}>
                   <Link className="mw-directory-link" to={item.link}>
-                    {item.kind === "pdf" && <PdfIcon />}
+                    {item.kind && <FileIcon kind={item.kind} />}
                     {item.title}
                   </Link>
                 </li>
@@ -223,12 +223,12 @@ function WikiPage() {
       </div>
     );
   }
-  if (data.mode === "pdf" && data.file_url) {
+  if ((data.mode === "pdf" || data.mode === "html") && data.file_url) {
     return (
       <div className="mw-page-stack mw-pdf-page">
         <div className="mw-pdf-heading">
           <h1>
-            <PdfIcon />
+            <FileIcon kind={data.mode} />
             {data.title}
           </h1>
           <div className="mw-pdf-actions">
@@ -240,15 +240,26 @@ function WikiPage() {
             </a>
           </div>
         </div>
-        {/* The browser's own PDF viewer; where it can't embed (most phones), the fallback offers the file. */}
-        <object className="mw-pdf-frame" data={data.file_url} type="application/pdf" aria-label={data.title}>
-          <p className="mw-muted">
-            This browser can't show PDFs inline.{" "}
-            <a className="mw-directory-link" href={data.file_url} target="_blank" rel="noopener">
-              Open the PDF
-            </a>
-          </p>
-        </object>
+        {data.mode === "html" ? (
+          // Sandboxed to match the server's CSP: no scripts, no access to the wiki;
+          // links may still open in a new tab.
+          <iframe
+            className="mw-pdf-frame mw-html-frame"
+            src={data.file_url}
+            title={data.title}
+            sandbox="allow-popups allow-popups-to-escape-sandbox"
+          />
+        ) : (
+          /* The browser's own PDF viewer; where it can't embed (most phones), the fallback offers the file. */
+          <object className="mw-pdf-frame" data={data.file_url} type="application/pdf" aria-label={data.title}>
+            <p className="mw-muted">
+              This browser can't show PDFs inline.{" "}
+              <a className="mw-directory-link" href={data.file_url} target="_blank" rel="noopener">
+                Open the PDF
+              </a>
+            </p>
+          </object>
+        )}
       </div>
     );
   }
@@ -289,7 +300,7 @@ function SearchPage() {
               }
             }}>
             <div className="mw-result-title">
-              {result.kind === "pdf" && <PdfIcon />}
+              {result.kind && <FileIcon kind={result.kind} />}
               {result.title}
             </div>
             <div className="mw-result-path">{result.path}</div>
@@ -337,7 +348,7 @@ export default function App() {
                 {section.items.map((item) => (
                   <li key={item.link}>
                     <Link to={item.link}>
-                      {item.kind === "pdf" && <PdfIcon />}
+                      {item.kind && <FileIcon kind={item.kind} />}
                       {item.title}
                     </Link>
                   </li>
