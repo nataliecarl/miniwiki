@@ -25,6 +25,15 @@ app = FastAPI()
 
 GIT_ENV = os.environ.copy()
 GIT_ENV['GIT_SSH_COMMAND'] = 'ssh -i /app/keys/miniwiki -o IdentitiesOnly=yes -o StrictHostKeyChecking=no'
+# Keep git's automatic gc/maintenance in the foreground. Detached, it outlives the git
+# command that started it and is reparented to this process (PID 1 in the container), which
+# never reaps it: every fetch left a zombie behind until the container's process limit was
+# hit and git could no longer fork ("Resource temporarily unavailable").
+GIT_ENV['GIT_CONFIG_COUNT'] = '2'
+GIT_ENV['GIT_CONFIG_KEY_0'] = 'gc.autoDetach'
+GIT_ENV['GIT_CONFIG_VALUE_0'] = 'false'
+GIT_ENV['GIT_CONFIG_KEY_1'] = 'maintenance.autoDetach'
+GIT_ENV['GIT_CONFIG_VALUE_1'] = 'false'
 GIT_ENV.setdefault('GIT_AUTHOR_NAME', 'Miniwiki Nextcloud Sync')
 GIT_ENV.setdefault('GIT_AUTHOR_EMAIL', 'miniwiki@localhost')
 GIT_ENV.setdefault('GIT_COMMITTER_NAME', GIT_ENV['GIT_AUTHOR_NAME'])

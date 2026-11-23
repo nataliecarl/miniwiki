@@ -1,6 +1,8 @@
 services:
   webhook:
     build: ./webhook/
+    # Run an init as PID 1 so orphaned child processes (git, ssh) are reaped.
+    init: true
     volumes:
       - .:/app/wiki
       - ./keys:/app/keys:ro
